@@ -4,7 +4,8 @@
 
 ----
 
-# The Artisitic License (as described at [opensource.org](href="http://www.opensource.org"))
+# The Artisitic License
+(as described at [opensource.org](https://opensource.org/licenses/artistic-license-1.0))
 
 ## Preamble
 
