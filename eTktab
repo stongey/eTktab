@@ -1,0 +1,5105 @@
+#!/bin/sh
+# This line makes the next one a comment in Tcl \
+exec wish "$0" -- ${1+"$@"}
+
+# eTKTab by Jason Sonnenschein jes_jm@yahoo.com
+# based on:
+
+# TkTab by Giovanni Chierico, chierico@writeme.com
+# You can do whatever you want with the code, as long as you leave my name and email address in it. Thanks
+
+# $Id: eTktab,v 1.355 2003/11/19 16:53:22 jsonn Exp $
+
+#######################################
+### SET CONSTANTS:
+###
+
+# create necessary root namespaces
+namespace eval WIN {}
+namespace eval defaults {}
+
+# move next line to initialization code when program pulls up new windows
+set version "3.2"
+set webpage {http://etktab.sourceforge.net}
+set author {Jason Sonnenschein (jes_jm@yahoo.com)}
+
+# Mac OS X calls itself Unix, but is really more mac-like
+array set my_platform [ array get tcl_platform ]
+if {$my_platform(os)=="Darwin"} {
+    set my_platform(platform) "macintosh"
+}
+# some O/S dependent stuff
+switch -- $my_platform(platform) {
+    {macintosh} {
+        set commandkey Command
+        set altkey Option
+        # Cloverleaf symbol in Chicago Font is ASCII 17 (HEX 11)
+        set displaycmd "\x11"
+        set displayalt Opt
+        set keynext Next
+        set keyprior Prior
+        array set mousebind {paste ButtonPress-3 extend Shift-ButtonPress-1 disable {Shift-Button1-Motion Shift-ButtonRelease-1 Shift-B1-Leave Shift-B1-Enter}}
+        set program_dir [ file dirname [ info nameofexecutable ] ]
+        if {$my_platform(os)=="MacOS"} {
+            set prefs_filename [file join $env(PREF_FOLDER) eTktab]
+            set tempdir $env(TEMP)
+            set cwd [pwd]
+        } else {
+            set prefs_filename [file join $env(HOME) .eTktabrc]
+            set tempdir /tmp
+            set cwd $env(HOME)
+        }
+    }
+    {windows} {
+        set altkey Alt
+        set commandkey Control
+        set displayalt Alt
+        set displaycmd Ctrl
+        set keynext Next
+        set keyprior Prior
+        array set mousebind {paste ButtonPress-3 extend Shift-ButtonPress-1 disable {Shift-Button1-Motion Shift-ButtonRelease-1 Shift-B1-Leave Shift-B1-Enter}}
+        set prefs_filename {HKEY_CURRENT_USER\Software\eTktab} 
+        catch {set tempdir $env(TMP)}
+        catch {set tempdir $env(TEMP)}
+        set program_dir [ file dirname [ info nameofexecutable ] ]
+        set cwd [pwd]
+    }
+    default {
+        # Unix
+        set altkey Alt
+        set commandkey Control
+        set displayalt Alt
+        set displaycmd Ctrl
+        set keynext Page_Down
+        set keyprior Page_Up
+        array set mousebind {paste ButtonPress-2 extend ButtonPress-3 disable {}}
+        set prefs_filename [file join $env(HOME) .eTktabrc]
+        set tempdir /tmp
+        set program_dir [ file dirname [ info script ] ]
+        set cwd [pwd]
+    }
+}
+
+# number of redo/undo steps kept
+set histsteps 10
+
+# all possible notes
+set chromatic {D# {D } Db C# {C } {B } Bb A# {A } Ab G# {G } Gb F# {F } {E } Eb}
+
+# basefret stuff
+set maxbasefret 21
+
+# what embellishments are there
+array set embellish { 0 - 1 h 2 p 3 ^ 4 ~ 5 / 6 "\\" 7 s 8 b 9 r 10 t 20 x }
+
+# what non-fret symbols are there
+array set tab_symbols { -1 --- -2 -|- -6 o|- -10 -|o -14 o|o -16 {   }}
+
+# width of guitar tuning in chars
+set initial_col 3
+
+# chars per column of tab
+set col_width 3
+
+# max lines of lyrics
+set lyrics_max 10
+
+# font sizes and types to be made available in prefs
+set font_sizes { 6 7 8 9 10 12 14 18 24 }
+array set font_weights {regular {} bold bold italic italic bold_italic {bold italic}}
+
+# appearance of main window and statusbar
+array set default_prefs {color_tab_bg_default black color_tab_bg_sel grey60 color_tab_fg_default white color_tab_fg_currpos red color_tab_fg_currstring green font_help {Courier 10} font_tab {Courier 12} font_statusbar {Times 10 bold} color_menu_fg_left blue color_menu_fg_right green color_menu_bg black color_help_fg black color_help_bg lightgrey num_strings 6 row_sep_lines 3 score_width 75 window_height 40 window_width 80 page_length 58 }
+
+if {$my_platform(platform)=="windows"} {
+    # Courier 12 looks too big in main tab window under MS Windows
+    set default_prefs(font_tab) {Courier 10}
+    # prfile handles win printing... it sets page length to 74
+    set default_prefs(page_length) 74
+} elseif {$my_platform(platform)=="macintosh"} {
+    # Some macOS versions don't like certain colors and fonts being changed
+    array set default_prefs {color_menu_fg_left black color_menu_fg_right black color_menu_bg lightgrey}
+    set tabwin_options(*background) $default_prefs(color_menu_bg)
+    set default_prefs(print_command) {}
+} else {
+    set default_prefs(print_command) {lp}
+}
+
+# set up tk defaults for widgets
+array set tabwin_options "*Menubutton.relief raised *Menubutton.indicatorOn 1 *Menu.TearOff 0 *Dialog.msg.wrapLength 4i *Dialog.Button.underline 0 *Textwin.Text.setGrid 1 *Textwin.Text.wrap none *Textwin.Text.cursor left_ptr"
+
+# stuff related to number of strings
+set valid_numstrings "7 6 5 4"
+set default_prefs(tuning_4) { 0 {G } 1 {D } 2 {A } 3 {E } }
+set default_prefs(tun_presets_4) { \
+    bass-standard { 0 {G } 1 {D } 2 {A } 3 {E } } \
+    mandolin-standard { 0 {G } 1 {D } 2 {A } 3 {E }} \
+    violin-standard { 0 {G } 1 {D } 2 {A } 3 {E }} \
+    ukelele-standard { 0 {B } 1 {F#} 2 {D } 3 {A }} \
+}
+set default_prefs(tuning_5) { 0 {D } 1 {B } 2 {G } 3 {D } 4 {G }}
+set default_prefs(tun_presets_5) { \
+    {banjo-G (standard)} { 0 {D } 1 {B } 2 {G } 3 {D } 4 {G }} \
+    banjo-gm { 0 {D } 1 {Bb} 2 {G } 3 {D } 4 {G }} \
+    banjo-c { 0 {D } 1 {B } 2 {G } 3 {C } 4 {G }} \
+    {banjo-d (Reuben)} { 0 {D } 1 {A } 2 {F#} 3 {D } 4 {F#}} \
+    banjo-dm { 0 {D } 1 {A } 2 {F } 3 {D } 4 {A }} \
+    banjo-a { 0 {E } 1 {C#} 2 {A } 3 {E } 4 {A }} \
+    banjo-mountain.minor/sawmill { 0 {D } 1 {C } 2 {G } 3 {D } 4 {G }} \
+    banjo-double-C { 0 {D } 1 {C } 2 {G } 3 {C } 4 {G }} \
+    bass-5string { 0 {B } 1 {G } 2 {D } 3 {A } 4 {E } } \
+}
+set default_prefs(tuning_6) { 0 {E } 1 {B } 2 {G } 3 {D } 4 {A } 5 {E } }
+set default_prefs(tun_presets_6) { \
+    guitar-standard { 0 {E } 1 {B } 2 {G } 3 {D } 4 {A } 5 {E } } \
+    drop-D { 0 {E } 1 {B } 2 {G } 3 {D } 4 {A } 5 {D }} \
+    double-D { 0 {D } 1 {B } 2 {G } 3 {D } 4 {A } 5 {D }} \
+    open-G { 0 {D } 1 {B } 2 {G } 3 {D } 4 {B } 5 {D }} \
+    open-D { 0 {D } 1 {A } 2 {F#} 3 {D } 4 {A } 5 {D }} \
+    open-E { 0 {E } 1 {B } 2 {G#} 3 {E } 4 {B } 5 {E }} \
+    open-A { 0 {E } 1 {C#} 2 {A } 3 {E } 4 {A } 5 {E }} \
+    open-C { 0 {E } 1 {C } 2 {G } 3 {C } 4 {G } 5 {C }} \
+    open-Gm { 0 {D } 1 {B } 2 {G } 3 {D } 4 {Bb} 5 {D }} \
+    open-Dm { 0 {D } 1 {A } 2 {F } 3 {D } 4 {A } 5 {D }} \
+    open-Em { 0 {E } 1 {B } 2 {G } 3 {E } 4 {B } 5 {E }} \
+    open-Am { 0 {D } 1 {A } 2 {F } 3 {D } 4 {A } 5 {D }} \
+    Eb { 0 {Eb} 1 {Bb} 2 {Gb} 3 {Db} 4 {Ab} 5 {Eb}} \
+    D { 0 {D } 1 {A } 2 {F } 3 {C } 4 {G } 5 {D }} \
+    DADGAD { 0 {D } 1 {A } 2 {G } 3 {D } 4 {A } 5 {D }} \
+    BADGAD { 0 {D } 1 {A } 2 {G } 3 {D } 4 {A } 5 {B }} \
+    orkney { 0 {D } 1 {C } 2 {G } 3 {D } 4 {G } 5 {C }} \
+}
+set default_prefs(tuning_7) { 0 {D } 1 {G } 2 {C } 3 {F } 4 {A } 5 {D } 6 {G } }
+set default_prefs(tun_presets_7) { \
+    lute-7string { 0 {D } 1 {G } 2 {C } 3 {F } 4 {A } 5 {D } 6 {G }} \
+    guitar-7string { 0 {E } 1 {B } 2 {G } 3 {D } 4 {A } 5 {E } 6 {B }} \
+}
+# fill in numstring dependent stuff that doesn't need messages array
+set menu_ns 0
+foreach ns $valid_numstrings {
+    set gui_label(menu:${ns}string) "{msg_frame.left_frame.file.menu.new $menu_ns} {msg_frame.left_frame.edit.menu.option.numstrings $menu_ns} {msg_frame.left_frame.edit.menu.option.tun_default $menu_ns} {msg_frame.left_frame.edit.menu.option.tun_presets $menu_ns}"
+    set ext($ns) ".et$ns"
+    set macext($ns) "eTk$ns"
+    set blank_tab($ns) " { [lrange { -1 -1 -1 -1 -1 -1 -1 -1 } 0 [ expr $ns -1 ] ] } "
+    set whitespace($ns) " { [lrange { -16 -16 -16 -16 -16 -16 -16 -16 } 0 [ expr $ns -1 ] ] } "
+    set blank_asciitab($ns) [lrange { 0 {} 1 {} 2 {} 3 {} 4 {} 5 {} 6 {} 7 {} } 0 [ expr $ns * 2 - 1 ] ]
+    incr menu_ns
+}
+
+# back end commands for keybindings:
+
+array set keybind_funcs {
+    back back
+    forward forward
+    up_string up_string
+    down_string down_string
+    up_score up_score
+    down_score down_score
+    home home
+    end end
+    inc_base inc_basefret
+    dec_base dec_basefret
+    help help
+    mode toggle_insert_mode
+    mark toggle_mark
+    select_all select_all
+    del_note del_note
+    del_pos {del_pos -history}
+    backspace backspace
+    tuning {tuning_win current}
+    blanktab_before {add_blank -history -redraw}
+    blanktab_after {add_blank -advance -history -redraw}
+    whitespace_after {whitespace -history -redraw}
+    whitespace_to_endline {force_newline}
+    bar bar
+    repeat {toggle_repeat}
+}
+
+array set common_funcs {
+    copy {edit_menu copy}
+    cut {edit_menu cut}
+    paste {edit_menu paste}
+    undo history_undo
+    redo history_redo
+    new new_tab
+    open open_dialog
+    save save_tab
+    export export_tab
+    print print_tab
+    close close_tab
+    quit_safe quit_safe
+    exit __exit_now
+    redraw redraw_full
+    lyrics_mode toggle_lyrics_mode
+}
+
+array set lyrics_funcs {
+    lyr_left {text_cursor "- 1 chars"}
+    lyr_right {text_cursor "+ 1 chars"}
+    lyr_up {text_cursor "- 1 lines"}
+    lyr_down {text_cursor "+ 1 lines"}
+    lyr_home text_home
+    lyr_end text_end
+    lyr_upsection text_upsection
+    lyr_dnsection text_dnsection
+    lyr_delete text_delete
+    lyr_backspace text_backspace
+    lyr_enter "text_insert {\n}"
+}
+    
+# widget names for each lang-specific message
+
+array set gui_text {
+    string:mode msg_frame.right_frame.chord_lead_legend
+    string:basefret msg_frame.right_frame.basefret_legend
+    button:help {msg_frame.left_frame.help}
+    button:tuning msg_frame.right_frame.tuning
+    menu:file msg_frame.left_frame.file
+    menu:edit msg_frame.left_frame.edit
+    menu:windows msg_frame.left_frame.windows
+}
+
+array set gui_label {
+    string:chord {{msg_frame.right_frame.chord_lead.menu 0}}
+    string:lead {{msg_frame.right_frame.chord_lead.menu 1}}
+    menu:new {{msg_frame.left_frame.file.menu 0}}
+    string:open {{msg_frame.left_frame.file.menu 1}}
+    string:save {{msg_frame.left_frame.file.menu 2}}
+    menu:save_as {{msg_frame.left_frame.file.menu 3}}
+    string:export {{msg_frame.left_frame.file.menu 4}}
+    string:print {{msg_frame.left_frame.file.menu 5}}
+    menu:close {{msg_frame.left_frame.file.menu 6}}
+    menu:quit {{msg_frame.left_frame.file.menu 7}}
+    menu:undo {{msg_frame.left_frame.edit.menu 0}}
+    menu:redo {{msg_frame.left_frame.edit.menu 1}}
+    menu:cut {{msg_frame.left_frame.edit.menu 3}}
+    menu:copy {{msg_frame.left_frame.edit.menu 4}}
+    menu:clear {{msg_frame.left_frame.edit.menu 5}}
+    menu:paste {{msg_frame.left_frame.edit.menu 6}}
+    menu:select_all {{msg_frame.left_frame.edit.menu 7}}
+    menu:format {{msg_frame.left_frame.edit.menu 9}}
+    menu:options {{msg_frame.left_frame.edit.menu 10}}
+    string:keybind {{msg_frame.left_frame.edit.menu.option 0}}
+    string:language {{msg_frame.left_frame.edit.menu.option 1}}
+    menu:font {{msg_frame.left_frame.edit.menu.option 2}}
+    menu:color {{msg_frame.left_frame.edit.menu.option 3}}
+    menu:default_numstrings {{msg_frame.left_frame.edit.menu.option 5}}
+    menu:default_tuning {{msg_frame.left_frame.edit.menu.option 6}}
+    string:tuning_presets {{msg_frame.left_frame.edit.menu.option 7}}
+    menu:default_format {{msg_frame.left_frame.edit.menu.option 8}}
+    menu:revert {{msg_frame.left_frame.edit.menu.option 10}}
+}
+
+# menu accelerator keys
+array set gui_accel {
+    open {msg_frame.left_frame.file.menu 1}
+    save {msg_frame.left_frame.file.menu 2}
+    export {msg_frame.left_frame.file.menu 4}
+    print {msg_frame.left_frame.file.menu 5}
+    close {msg_frame.left_frame.file.menu 6}
+    quit_safe {msg_frame.left_frame.file.menu 7}
+    undo {msg_frame.left_frame.edit.menu 0}
+    redo {msg_frame.left_frame.edit.menu 1}
+    cut {msg_frame.left_frame.edit.menu 3}
+    copy {msg_frame.left_frame.edit.menu 4}
+    paste {msg_frame.left_frame.edit.menu 6}
+    select_all {msg_frame.left_frame.edit.menu 7}
+}
+
+#######################################
+### INITIALIZE GLOBALS THAT DON'T GET RESET WITH NEW DOCUMENT
+###
+
+set newwin 0
+# clear out the paste buffer
+set pastebuf ""
+set settings_file_failures ""
+set print_counter 0
+set images(disabled.up) [image create bitmap -data "#define i_width 5\n#define i_height 3\nstatic char i_bits = {\n4,14,31}"]
+set images(disabled.dn) [image create bitmap -data "#define i_width 5\n#define i_height 3\nstatic char i_bits = {\n31,14,4}"]
+
+#######################################
+### GLOBAL FUNCTIONS:
+###
+
+# doing this to have save queries come up when using Quit from mac menus
+rename exit __exit_now
+proc exit {} {quit_safe}
+
+# we use some stuff that is typically hidden in tcl/tk 8.4 and above
+if {![llength [info commands tkCancelRepeat]]} {
+    tk::unsupported::ExposePrivateCommand tkCancelRepeat
+}
+if {![llength [info commands tkTextClosestGap]]} {
+    tk::unsupported::ExposePrivateCommand tkTextClosestGap
+}
+if {![llength [info globals tkPriv]]} {
+    tk::unsupported::ExposePrivateVariable tkPriv
+}
+
+# parse arguments coming in to a proc and return in a parsed manner
+proc getopt {returnvar valid raw} {
+    upvar $returnvar opts
+
+    foreach i $valid {
+        if { [string range $i end end ]  == ":" } {
+            set flags(-[string trimright $i :]) 1
+            set opts([string trimright $i :]) -1
+        } else {
+            set flags(-$i) 0
+            set opts($i) -1
+        }
+    }
+    for { set j 0 } { $j < [ llength $raw ] } { incr j } {
+        set possflag [ lindex $raw $j ]
+        if { [info exists flags($possflag)] } {
+            if {$flags($possflag) == 1} {
+                set opts([string trimleft $possflag -]) [lindex $raw [expr $j + 1 ] ]
+                incr j
+            } else {
+                set opts([string trimleft $possflag -]) 1
+            }
+        } else {
+            set opts(EXTRA) [lrange $raw $j end]
+            break
+        }
+    }
+}
+
+# there are equivalents to the next 2 procs in extended tcl/tk, but we're not 
+# going to assume we're running under that
+
+# return minimum of 2 vals
+proc calc_min {arg1 arg2} {
+    if { $arg1 < $arg2} {
+        return $arg1
+    } else {
+        return $arg2
+    }
+}
+# return maximum of 2 vals
+proc calc_max {arg1 arg2} {
+    if { $arg1 > $arg2} {
+        return $arg1
+    } else {
+        return $arg2
+    }
+}
+
+# also similar to some extended tcl procs
+
+# add a new element to the beginning of a list, but limit its length
+proc listshift {arrayname index limit new_item} {
+    upvar $arrayname arr
+
+    set arr($index) [ linsert [lrange $arr($index) 0 [expr $limit - 2 ] ] 0 "$new_item" ]
+}
+# return the first element from a list, and remove it from the list
+proc listpop {arrayname index} {
+    upvar $arrayname arr
+
+    set popped [ lindex $arr($index) 0 ]
+    set arr($index) [ lreplace $arr($index) 0 0 ]
+    return "$popped"
+}
+
+# return the next element in a list
+proc listnext {args} {
+    getopt opts {cycle} $args
+    upvar [lindex $opts(EXTRA) 0] currval
+    set fullist [lindex $opts(EXTRA) 1]
+    set listlen [ expr [ llength $fullist ] - 1 ]
+    set element_pos [lsearch -exact $fullist $currval]
+    if { $element_pos < $listlen } {
+        set currval [ lindex $fullist [incr element_pos] ]
+    } elseif { $opts(cycle) > 0 } {
+        set currval [ lindex $fullist 0 ]
+    }
+}
+    
+# return the next element in a list
+proc listprev {args} {
+    getopt opts {cycle} $args
+    upvar [lindex $opts(EXTRA) 0] currval
+    set fullist [lindex $opts(EXTRA) 1]
+    set element_pos [lsearch -exact $fullist $currval]
+    set listlen [ expr [ llength $fullist ] - 1 ]
+    if { $element_pos > 0 } {
+        set currval [ lindex $fullist [incr element_pos -1] ]
+    } elseif { $opts(cycle) > 0 } {
+        set currval [ lindex $fullist $listlen ]
+    }
+}
+
+# create new window
+proc new_tab {args} { 
+    global newwin
+    global prefs
+    global messages
+    global settings_file_failures
+
+    getopt opts {strings: file:} $args
+    # new tab defaults to default numstrings in prefs
+    if { $opts(strings) != -1 } {
+        set requested_strings $opts(strings)
+    } else {
+        set requested_strings $prefs(num_strings) 
+    }
+    
+    # set up a new variable space for the window
+    incr newwin
+    set new_namespace ::WIN::$newwin
+    namespace eval $new_namespace {}
+    set ${new_namespace}::num_strings $requested_strings
+    set ${new_namespace}::name ""
+    if { $opts(file) != -1 } {
+        set ${new_namespace}::name $opts(file)
+    }
+    initialize_vars $new_namespace
+
+    # create the new window
+    build_gui $new_namespace
+
+    # initialize the contents of the tablature
+    redraw_full
+    # let Tk draw the window, so transients of it will appear correctly
+    update idletasks
+    if { $opts(file) != -1 } {
+        open_tab
+    }
+    # need to post settings file load failures after first tab window 
+    # is opened (due to it being a transient)
+    foreach filename $settings_file_failures {
+        my_dialog $messages(title:open_fail)  [subst -nocommands -nobackslashes $messages(dialog:open_fail) ] error 0 $messages(button:ok)
+    }
+    set settings_file_failures ""
+}
+
+# perform function for each tab window
+proc each_namespace {cmd} {
+    global curr_namespace
+        
+    set orig_namespace $curr_namespace
+    foreach curr_namespace [ namespace children ::WIN ] {
+        eval $cmd
+    }
+    set curr_namespace $orig_namespace
+}
+
+# generic proc to load settings files
+proc read_settings_file {filename} {
+    global settings_file_failures
+
+    catch { set settings_file [open "$filename" r] }
+    # file open failed
+    if { ! ( [ info exists settings_file ] ) } {
+        lappend settings_file_failures $filename
+        return ""
+    }
+
+    set cont_line 0
+    while { [gets $settings_file file_line ] != -1 } {
+        # ignore lines beginning with '#'
+        if { [string first {#} $file_line] == 0 } {
+            set cont_line 0
+            continue
+        # add on to prev. line if last line ended in '\'
+        } elseif { $cont_line == 1 } {
+            if { [string range $file_line end end ] == "\\"} {
+                set file_line [ string range $file_line 0 [ expr [string length $file_line ] - 2 ] ]\n
+            } else {
+                set cont_line 0
+            }
+            append array_value "${file_line}"
+        # look for <word> = <whatever> format
+        } elseif { [regexp {([a-zA-Z0-9\-_\.\,\:]+)\ *=\ *(.+)} $file_line full p1 p2] } {
+            if { [string range $p2 end end ] == "\\"} {
+                set p2 [ string range $p2 0 [ expr [string length $p2 ] - 2 ] ]\n
+                set cont_line 1
+            }
+            set array_key $p1
+            set array_value $p2
+        # ignore lines that don't match above criteria
+        } else {
+            continue
+        }
+        if { $cont_line == 0 } {
+            set return_array($array_key) $array_value
+        }
+    }
+    close $settings_file
+    return [array get return_array]
+}
+
+#look for eTktab user preferences in OS appropriate location
+proc load_prefs {} {
+    global default_prefs
+    global prefs
+    global prefs_filename
+    global tabwin_options
+    global settings_file_failures
+
+    #load defaults
+    array set prefs [ array get default_prefs ]
+
+    if { [string first HKEY_ $prefs_filename ] == 0 } {
+        #ms-windows: look for user-specific registry entries
+        catch { set registry_values [ registry values $prefs_filename ] }
+        if { [ info exists registry_values ] } {
+            foreach curr_registry $registry_values {
+                set curr_value [ registry get $prefs_filename $curr_registry ] 
+                set prefs($curr_registry) $curr_value
+            }
+        }
+    } else {
+        # read in prefs file, if it exists
+        array set prefs [ read_settings_file $prefs_filename ]
+        # don't keep info. on failing to read the user's prefs...
+        # they don't have to have a preferences file
+        set settings_file_failures ""
+    }
+    # load in keybindings and natural language support
+    load_language_support
+    load_keybindings
+}
+
+# save user's prefs
+proc save_prefs {} {
+    global prefs
+    global prefs_filename
+    global messages
+
+    set filename $prefs_filename
+    if { [string first HKEY $prefs_filename ] == 0 } {
+        #ms-windows: set user-specific registry entries
+        foreach prefs_key [array names prefs] {
+             registry set $prefs_filename $prefs_key $prefs($prefs_key)
+        }
+    } else {
+        # mac/unix put prefs in user dotfile or mac preferences file
+        # on failed file operation, does user want to retry?
+        set success 0
+        while { ! ($success) } {
+            catch { set prefs_filehandle [open "$prefs_filename" w] }
+            if { [info exists prefs_filehandle] } {
+                set success 1
+            } elseif { [my_dialog  $messages(title:save_fail)  [subst -nocommands -nobackslashes $messages(dialog:save_fail)] error "" $messages(button:retry) $messages(button:cancel) ] == "1" } {
+                    return
+            }
+        }
+    
+        # write prefs to file
+        foreach prefs_key [ lsort [array names prefs] ] {
+            puts $prefs_filehandle "$prefs_key = $prefs($prefs_key)"
+        }
+        close $prefs_filehandle
+
+    }
+
+}
+
+#open keybindings file and read its contents into keybind array
+proc load_keybindings {} {
+    global prefs
+    global keybindings
+    global keynames
+    global altkey
+    global commandkey
+    global keynext
+    global keyprior
+    global messages
+    global displayalt
+    global displaycmd
+
+    # Load in defaults
+    array set unparsed_bindings [ default_keybindings ]
+    # Did the user specify a keybindings file in the prefs?
+    if { [array names prefs keybindings] != "" } {
+        # Read in the file
+        array set unparsed_bindings [ read_settings_file $prefs(keybindings)]
+    }
+
+    # Parse raw bindings
+    foreach p1 [array names unparsed_bindings ] {
+        set p2 $unparsed_bindings($p1)
+        set new_keybind ""
+        set new_keyname ""
+        # Substitute for OS-specific keynames
+        regsub -all {PGUP} $p2 $keyprior p2
+        regsub -all {PGDN} $p2 $keynext p2
+        # escape backslashes
+        regsub -all {\\} $p2 {\\\\} p2
+        foreach curr_key $p2 {
+            # parse 'keysym(help_screen)' lines
+            if { ! ( [regexp {([^\(]+)\-\>\((.*)\)} $curr_key full actual display ] ) } {
+                set actual $curr_key
+                set display $curr_key
+            }
+            lappend new_keybind $actual
+            if {$display != ""} {
+                lappend new_keyname $display
+            }
+        }
+        # more os-dependent substitutions
+        regsub -all CMD $new_keybind $commandkey new_keybind
+        regsub -all CMD $new_keyname $displaycmd new_keyname
+        regsub -all {ALT} $new_keyname $displayalt new_keyname
+        regsub -all {ALT} $new_keybind $altkey new_keybind
+        set new_keyname [join $new_keyname " $messages(string:or) "]
+        if { [ string first {note} $p1 ] != 0 } {
+            set new_keyname [format {%-18s} $new_keyname ]
+        }
+        set keybindings($p1) $new_keybind
+        set keynames($p1) $new_keyname
+    }
+}
+
+# default (qwerty keyboard) keybindings
+proc default_keybindings {} {
+    return {
+        back Left
+        forward Right
+        up_string Up
+        down_string Down
+        up_score PGUP->(Page_Up)
+        down_score PGDN->(Page_Down)
+        home Home
+        end End
+        inc_base {plus->(+) equal->()}
+        dec_base {minus->(-) underscore->()}
+        new CMD-n
+        open CMD-o
+        save CMD-s
+        export CMD-e
+        print CMD-p
+        close CMD-w
+        quit_safe {CMD-q Escape->(Esc)}
+        exit CMD-backslash->(CMD-\\)
+        redraw CMD-l
+        help {question->(?) CMD-h}
+        mode Key-Tab->(Tab)
+        lyrics_mode CMD-Key-Tab->(CMD-Tab)
+        mark CMD-m
+        select_all CMD-a
+        copy CMD-c
+        cut CMD-x
+        paste CMD-v
+        undo CMD-u
+        redo CMD-r
+        del_note Delete
+        del_pos Shift-Delete
+        backspace BackSpace
+        tuning {semicolon->(;) colon->()}
+        blanktab_before Insert
+        blanktab_after space
+        whitespace_after Shift-space
+        whitespace_to_endline Return
+        bar {bar->(|) backslash->()}
+        repeat {ALT-semicolon->(ALT-;) ALT-colon->()}
+        mod:0 ALT-minus->(ALT--)
+        mod:1 ALT-h
+        mod:2 ALT-p
+        mod:3 ALT-Key-6->(ALT-6)
+        mod:4 ALT-quoteleft->(ALT-`)
+        mod:5 ALT-slash->(ALT-/)
+        mod:6 ALT-backslash->(ALT-\\)
+        mod:7 ALT-s
+        mod:8 ALT-b
+        mod:9 ALT-r
+        mod:10 ALT-t
+        mod:20 ALT-x
+        note:E.o exclam->(!)
+        note:A.o at->(@)
+        note:D.o numbersign->(#)
+        note:G.o dollar->($)
+        note:B.o percent->(%)
+        note:e.o asciicircum->(^)
+        note:a.o ampersand->(&)
+        note:E.0 Key-1->(1)
+        note:A.0 Key-2->(2)
+        note:D.0 Key-3->(3)
+        note:G.0 Key-4->(4)
+        note:B.0 Key-5->(5)
+        note:e.0 Key-6->(6)
+        note:a.0 Key-7->(7)
+        note:E.1 q
+        note:A.1 w
+        note:D.1 e
+        note:G.1 r
+        note:B.1 t
+        note:e.1 y
+        note:a.1 u
+        note:E.2 a
+        note:A.2 s
+        note:D.2 d
+        note:G.2 f
+        note:B.2 g
+        note:e.2 h
+        note:a.2 j
+        note:E.3 z
+        note:A.3 x
+        note:D.3 c
+        note:G.3 v
+        note:B.3 b
+        note:e.3 n
+        note:a.3 m
+        lyr_left Left
+        lyr_right Right
+        lyr_up Up
+        lyr_down Down
+        lyr_upsection PGUP->(Page_Up)
+        lyr_dnsection PGDN->(Page_Down)
+        lyr_home Home
+        lyr_end End
+        lyr_delete Delete
+        lyr_backspace BackSpace
+        lyr_enter Return
+    }
+}
+
+# set up a global bindtag for each possible type of tablature (4,5,6 string)
+proc keybind_global {} {
+    global keybindings
+    global keybind_funcs
+    global common_funcs
+    global lyrics_funcs
+    global keynames
+    global my_platform
+    global embellish
+    global valid_numstrings
+    global mousebind
+
+    set string_set "E A D G B e a"
+    foreach ns $valid_numstrings {
+        # bulk of the keybindings
+        foreach func_name [ array names keybind_funcs ] {
+            foreach keypress $keybindings($func_name) {
+                bind Tabwindow$ns "<${keypress}>" $keybind_funcs($func_name)
+            }
+        }
+        # keybindings active in both tab and lyrics modes
+        foreach func_name [ array names common_funcs ] {
+            foreach keypress $keybindings($func_name) {
+                bind Tabwindow$ns "<${keypress}>" $common_funcs($func_name)
+            }
+        }
+        # modifiers
+        foreach modnum [ array names embellish ] {
+            foreach keypress $keybindings(mod:$modnum) {
+                bind Tabwindow$ns "<${keypress}>" "modifier $modnum"
+            }
+        }
+
+        # note insertions
+        set string_num $ns
+        foreach bind_string $string_set {
+           incr string_num -1
+           foreach bind_fret "o 0 1 2 3" {
+               foreach keypress $keybindings(note:${bind_string}.${bind_fret}) {
+                   # blank out some keybindings in 4/5-string mode
+                   if { $string_num < 0} {
+                       bind Tabwindow$ns "<${keypress}>" {}
+                   } else {
+                       bind Tabwindow$ns "<${keypress}>" "ins_note $string_num $bind_fret"
+                   }
+               }
+           }
+        }
+    }
+
+    # Mousebindings
+    bind Tablature <ButtonPress-1> "clear_mark; absolute_pos %x %y"
+    bind Tablature <Button1-Motion> "set_mark ; absolute_pos %x %y"
+    bind Tablature <ButtonRelease-1> "tkCancelRepeat"
+    bind Tablature <B1-Leave> {set tkPriv(x) %x ; set tkPriv(y) %y ; dragtab %W absolute_pos}
+    bind Tablature <B1-Enter> {tkCancelRepeat}
+    bind Tablature <$mousebind(paste)> "clear_mark ; absolute_pos %x %y; edit_menu paste"
+    bind Tablature <$mousebind(extend)> "absolute_pos %x %y"
+    foreach disable $mousebind(disable) {
+        bind Tablature <$disable> {}
+    }
+
+    # text/lyrics mode
+    bind Lyrics <ButtonPress-1> "absolute_textpos %x %y"
+    bind Lyrics <Button1-Motion> "text_select %x %y"
+    bind Lyrics <ButtonRelease-1> "tkCancelRepeat"
+    bind Lyrics <$mousebind(paste)> "absolute_textpos %x %y; edit_menu paste"
+    bind Lyrics <$mousebind(extend)> "text_select %x %y"
+    bind Lyrics <KeyPress> "text_insert %A"
+    bind Lyrics <B1-Leave> {set tkPriv(x) %x ; set tkPriv(y) %y ; dragtab %W text_select}
+    bind Lyrics <B1-Enter> {tkCancelRepeat}
+    foreach func_name [ array names lyrics_funcs ] {
+        foreach keypress $keybindings($func_name) {
+            bind Lyrics "<${keypress}>" $lyrics_funcs($func_name)
+        }
+    }
+    foreach func_name [ array names common_funcs ] {
+        foreach keypress $keybindings($func_name) {
+            bind Lyrics "<${keypress}>" $common_funcs($func_name)
+        }
+    }
+
+    # change keyboard acellerator shown in menu items of each open window
+    if { [info exists ::curr_namespace] } {
+        each_namespace label_menu_accel
+    }
+}
+
+#open natural-language support file and read its contents into messages array
+proc load_language_support {} {
+    global prefs
+    global messages
+    global valid_numstrings
+    global save_types
+    global open_types
+    global export_types
+    global language_types
+    global keybind_types
+    global ext
+    global macext
+
+    # load in defaults
+    array set messages [ default_language_support ]
+    # did user specify message file in prefs?
+    if { [array names prefs language] != "" } {
+        # read in the file
+        array set messages [ read_settings_file $prefs(language) ]
+    }
+
+    # fill in constants that need messages array
+    set export_types "
+        {{$messages(string:file_tab)}	{.tab}	}
+        {{$messages(string:file_tab)}	{}  TEXT}
+    "
+    set keybind_types "
+        {{$messages(string:keybind)}	{.etk}	}
+    "
+    set language_types "
+        {{$messages(string:language)}	{.etl}	}
+    "
+
+    foreach ns $valid_numstrings {
+        set filetype($ns) [ subst -nocommands -nobackslashes $messages(string:file_etx) ]
+        set messages(menu:${ns}string) [ subst -nocommands -nobackslashes $messages(menu:xstring) ]
+    }
+    foreach ns $valid_numstrings {
+        set save_types($ns) "
+            {{$filetype($ns)}       {$ext($ns)}       }
+            {{$filetype($ns)}       {}    $macext($ns)}
+        "
+        # put current type at top, followed by the other valid ones
+        set open_types($ns) "
+            {{$filetype($ns)}       {$ext($ns)}       }
+            {{$filetype($ns)}       {}    $macext($ns)}"
+        foreach non_ns $valid_numstrings {
+            if {$non_ns != $ns} {
+                append open_types($ns) "
+                    {{$filetype($non_ns)}       {$ext($non_ns)}       }
+                    {{$filetype($non_ns)}       {}    $macext($non_ns)}"
+            }
+        }
+    }
+}
+
+# default (American English) language support
+proc default_language_support {} {
+    return {
+        string:open Open
+        string:save Save
+        string:export Export
+        string:print Print
+        string:close Close
+        string:untitled Untitled
+        string:mode Mode
+        string:lead Lead
+        string:chord Chord
+        string:lyrics Lyrics
+        string:basefret {Base Fret}
+        string:or or
+        string:color_menu_fg_left {Left Side Menu Foreground}
+        string:color_menu_fg_right {Right Side Menu Foreground}
+        string:color_menu_bg {Menu/Button Background}
+        string:color_tab_fg_default {Tablature Default Foreground}
+        string:color_tab_fg_currpos {Tablature Current Position Foreground}
+        string:color_tab_fg_currstring {Tablature Current String Foreground}
+        string:color_tab_bg_default {Default Tablature Background}
+        string:color_tab_bg_sel {Selected Tablature Background}
+        string:color_help_fg {Help Text Foreground}
+        string:color_help_bg {Help Text Background}
+        string:font_help {Help Font}
+        string:font_tab {Tablature Font}
+        string:font_statusbar {Statusbar Font}
+        string:separation {Tab Spacing}
+        string:width {Tab Width}
+        string:window_width {Window Width}
+        string:window_height {Window Height}
+        string:regular Regular
+        string:bold Bold
+        string:italic Italic
+        string:bold_italic Bold+Italic
+        string:string_name {String $cs}
+        string:file_tab {ASCII Tab}
+        string:keybind Keybindings
+        string:language Language
+        string:file_etx {eTktab $ns String}
+        string:tuning_presets {Tuning Presets}
+        string:name Name
+        string:usage {Usage: $argv0 [tablature file]
+}
+        title:help {Help: eTktab$version}
+        title:tuning {Set Instrument Tuning}
+        title:about {About eTktab}
+        title:prefs_verify {Overwrite Preferences}
+        title:save_fail {Save Failed}
+        title:open_fail {Open Failed}
+        title:file_bad {File Format Bad}
+        title:close_verify {File not Saved!}
+        title:color {Choose Colors}
+        title:print_return {Printing Results}
+        dialog:about {eTktab $version by $author
+$webpage}
+        dialog:save_fail {Save operation failed for file:  $filename}
+        dialog:open_fail {Open operation failed for file:  $filename}
+        dialog:file_bad {eTktab$version cannot read the file format of $filename}
+        dialog:close_verify {$filename has been modified.  Do you want to save before closing?}
+        dialog:prefs_verify {This will overwrite all saved preferences.  Are you sure?}
+        dialog:print_command {Print Command:}
+        dialog:print_select {Select Printer:}
+        dialog:page_length {Page Length:}
+        dialog:print_unsupported {Sorry, printing not supported in Mac OS older than 10.2}
+        button:tuning Tuning
+        button:help Help
+        button:ok OK
+        button:cancel Cancel
+        button:yes Yes
+        button:no No
+        button:retry Retry
+        button:add Add
+        button:edit Edit
+        button:delete Delete
+        menu:file File
+        menu:new New
+        menu:save_as {Save As}
+        menu:close Close
+        menu:quit Quit
+        menu:edit Edit
+        menu:windows Windows
+        menu:undo {Undo $undo_menu}
+        menu:redo {Redo $redo_menu}
+        menu:cut Cut
+        menu:copy Copy
+        menu:clear Clear
+        menu:paste Paste
+        menu:select_all {Select All}
+        menu:options Preferences
+        menu:default_numstrings {New Document Default}
+        menu:default_tuning {Default Tuning}
+        menu:format {Document Formatting}
+        menu:default_format {Default Formatting}
+        menu:font Fonts
+        menu:color Colors
+        menu:revert {Revert to Defaults}
+        menu:xstring {$ns string}
+        history:note {Insert Note}
+        history:tuning {Change Tuning}
+        history:delete {Delete Tablature}
+        history:del_note {Delete Note}
+        history:blanktab {Insert Blank Tab}
+        history:whitespace {Insert Space}
+        history:cut {Cut Tablature}
+        history:clear {Clear Tablature}
+        history:paste {Paste Tablature}
+        history:expression {Expression Mark}
+        history:repeat {Toggle Repeat Symbol}
+        history:bar {Insert Bar}
+        history:newline {New Line}
+        history:text_cut {Cut Lyrics}
+        history:text_del {Delete Character}
+        history:text_clear {Clear Lyrics}
+        history:text_insert {Insert Lyrics}
+        history:text_paste {Paste Lyrics}
+        help:start {This help document describes the eTktab keybindings.  For a more general
+explanation of how the program works, please see the 'README.html' file that 
+comes with the program. 
+
+Inserting notes:
+
+Chord mode does not advance the cursor after each inserted note, lead mode 
+does.  This mode may be changed via pulldown menu or keys in the Misc. section
+
+
+          STRING (guitar)             STRING (banjo)            STRING (bass)
+
+            E A D G B E                  G B G B D                  E A D G
+          +-------------+              +-----------+              +---------+
+F  base+0 | $keynames(note:E.0) $keynames(note:A.0) $keynames(note:D.0) $keynames(note:G.0) $keynames(note:B.0) $keynames(note:e.0) |    F  base+0 | $keynames(note:E.0) $keynames(note:A.0) $keynames(note:D.0) $keynames(note:G.0) $keynames(note:B.0) |    F  base+0 | $keynames(note:E.0) $keynames(note:A.0) $keynames(note:D.0) $keynames(note:G.0) |
+R  base+1 | $keynames(note:E.1) $keynames(note:A.1) $keynames(note:D.1) $keynames(note:G.1) $keynames(note:B.1) $keynames(note:e.1) |    R  base+1 | $keynames(note:E.1) $keynames(note:A.1) $keynames(note:D.1) $keynames(note:G.1) $keynames(note:B.1) |    R  base+1 | $keynames(note:E.1) $keynames(note:A.1) $keynames(note:D.1) $keynames(note:G.1) |
+E  base+2 | $keynames(note:E.2) $keynames(note:A.2) $keynames(note:D.2) $keynames(note:G.2) $keynames(note:B.2) $keynames(note:e.2) |    E  base+2 | $keynames(note:E.2) $keynames(note:A.2) $keynames(note:D.2) $keynames(note:G.2) $keynames(note:B.2) |    E  base+2 | $keynames(note:E.2) $keynames(note:A.2) $keynames(note:D.2) $keynames(note:G.2) |
+T  base+3 | $keynames(note:E.3) $keynames(note:A.3) $keynames(note:D.3) $keynames(note:G.3) $keynames(note:B.3) $keynames(note:e.3) |    T  base+3 | $keynames(note:E.3) $keynames(note:A.3) $keynames(note:D.3) $keynames(note:G.3) $keynames(note:B.3) |    T  base+3 | $keynames(note:E.3) $keynames(note:A.3) $keynames(note:D.3) $keynames(note:G.3) |
+ 
+   open   | $keynames(note:E.o) $keynames(note:A.o) $keynames(note:D.o) $keynames(note:G.o) $keynames(note:B.o) $keynames(note:e.o) |       open   | $keynames(note:E.o) $keynames(note:A.o) $keynames(note:D.o) $keynames(note:G.o) $keynames(note:B.o) |       open   | $keynames(note:E.o) $keynames(note:A.o) $keynames(note:D.o) $keynames(note:G.o) |
+
+* base is shown in the status line and is changed via pulldown menu or the 
+  keys listed in the 'Miscellaneous' section, below 
+* bindings in the 'open' row are always at fret 0 (ignoring base fret)
+________________________________________________________________________________
+Cursor Movement:
+
+$keynames(up_string)  up a string         $keynames(down_string)  down a string
+$keynames(back)  left a position     $keynames(forward)  right a position
+$keynames(up_score)  up a score          $keynames(down_score)  down a score
+
+left mouse button click    unset mark (if any) and move to mouse position
+________________________________________________________________________________
+Insert/Delete:
+
+$keynames(backspace)  delete previous position OR clear (*)
+$keynames(del_note)  delete note under cursor OR clear (*)
+$keynames(del_pos)  delete current position  OR clear (*)
+$keynames(blanktab_before)  insert a new position at the cursor 
+$keynames(blanktab_after)  insert a new position after the cursor
+$keynames(whitespace_after)  insert whitespace at the cursor
+$keynames(whitespace_to_endline)  fill in whitespace to the end of the current line
+
+    (*) if there is currently a highlighted area (if a mark is set) this key
+        will clear that area instead of its usual function
+________________________________________________________________________________
+Note Alterations:
+
+$keynames(mod:5)  slide up to note    $keynames(mod:6)  slide down to note
+$keynames(mod:8)  bend                $keynames(mod:9)  release bend
+$keynames(mod:1)  hammer-on           $keynames(mod:2)  pull-off
+$keynames(mod:4)  vibrato (~)         $keynames(mod:3)  harmonic (^)
+$keynames(mod:7)  slap/pop            $keynames(mod:10)  right-hand tapping
+$keynames(mod:20)  muted               $keynames(mod:0)  remove alteration
+________________________________________________________________________________
+Cut/Paste:
+
+$keynames(mark)  (un)set mark        $keynames(select_all)  select all
+$keynames(copy)  copy highlighted tab
+$keynames(cut)  cut highlighted tab $keynames(paste)  paste(*)
+$keynames(undo)  undo                $keynames(redo)  redo
+
+$keynames(del_note)/   $keynames(backspace)  SEE Insert/Delete section above
+
+left mouse button click    unset mark (if any) and move to mouse position
+left mouse button drag     highlight dragged over area}
+        help:unix_mouse {
+middle mouse button        paste(*)
+right mouse button         move to mouse position; extend highlighted area}
+        help:windows_mouse {
+shift-left button click    move to mouse position; extend highlighted area
+right mouse button         paste(*)}
+        help:macintosh_mouse {
+shift-left button click    move to mouse position; extend highlighted area
+right mouse button         paste(*)
+    NOTE:  'left button' bindings only, on a 1-button mouse}
+        help:end {
+
+    (*) if there is currently a highlighted area (if a mark is set) the paste
+        function replaces the highlighted tab
+________________________________________________________________________________
+Miscellaneous:
+
+$keynames(inc_base)  increase basefret   $keynames(dec_base)  decrease basefret
+$keynames(bar)  add a bar           $keynames(repeat)  toggle repeat (*)
+$keynames(mode)  toggle chord/lead   $keynames(lyrics_mode)  toggle lyrics/tab
+$keynames(tuning)  change guitar tuning
+
+    (*) repeat symbols on bar lines... looking like this   |:   :|
+________________________________________________________________________________
+File I/O:
+
+$keynames(help)  HELP                $keynames(redraw)  redraw screen
+$keynames(quit_safe)  quit with save      $keynames(exit)  quit without save
+$keynames(open)  open eTktab file    $keynames(save)  save eTktab file
+$keynames(export)  export ascii tab    $keynames(new)  new tab   
+$keynames(close)  close document      $keynames(print)  print tab
+
+________________________________________________________________________________}
+    }
+}
+
+# revert all preferences to defaults
+proc pref_revert {} {
+    global prefs
+    global default_prefs
+    global curr_namespace
+    global messages
+    global prefs_button
+    variable ${curr_namespace}::tabwin
+
+    set w .prefs_verify
+    if { [ winfo exists $w ] } {
+        raise $w
+        focus $w
+        return
+    }
+    if { [ basic_transient $w $messages(title:prefs_verify) ] == -1 } {
+        return
+    }
+
+    label $w.text -text $messages(dialog:prefs_verify)
+    pack $w.text -side top -fill x
+    $w.buttons.cancel configure -command "
+        set prefs_button -1
+    "
+    $w.buttons.ok configure -default active -command "
+        set prefs_button 1
+    "
+    wm transient $w $tabwin
+    grab $w
+
+    tkwait variable prefs_button
+    grab release $w
+    destroy $w
+    if {$prefs_button == -1 } {
+        unset prefs_button
+        return
+    } 
+    unset prefs_button
+
+    set old_keybindings [ array names prefs keybindings ]
+    set old_language [ array names prefs language ]
+
+    # reset all preferences
+    unset prefs
+    array set prefs [ array get default_prefs ]
+    # save changes
+    save_prefs
+
+    # reload default keybindings and language support, if necessary
+    if {$old_language != ""} {
+        load_language_support
+        each_namespace label_gui
+    }
+    if {$old_keybindings != ""} {
+        load_keybindings
+        keybind_global
+    }
+    each_namespace color_gui
+}
+
+#set pref for default new tablature type
+proc pref_numstrings {strings} {
+    global prefs
+    global curr_namespace
+
+    save_prefs
+
+    # change behavior of 'new tab' keybinding in each open tab window
+    keybind_global
+}
+
+# show user reqested color combinations in color prefs window
+proc trycolor {} {
+    global temp_colors
+
+    foreach color_pref [ array names temp_colors] {
+        switch -glob -- $color_pref {
+            {*bg*} 
+                {.color.test tag configure $color_pref -background $temp_colors($color_pref)}
+            {*fg*} 
+                {.color.test tag configure $color_pref -foreground $temp_colors($color_pref)}
+        }
+    }
+}
+
+# place transient window centered over its parent
+proc place_transient {window} {
+    global my_platform
+    global curr_namespace
+    variable ${curr_namespace}::tabwin
+
+    wm withdraw $window
+    set x [expr {[winfo screenwidth $window]/2 - \
+        [winfo reqwidth $window]/2 - [winfo vrootx $tabwin]}]
+    set y [expr {[winfo screenheight $window]/2 - \
+        [winfo reqheight $window]/2 - [winfo vrooty $tabwin]}]
+    wm geom $window +$x+$y
+    wm resizable $window no no
+    wm transient $window $tabwin
+    wm deiconify $window
+
+    #ms-windows doesn't seem to want to focus on our new toplevel windows
+    if {$my_platform(platform)=="windows"} {
+        update idletasks
+        focus -force $window
+    }
+}
+
+# lower and uppercase bindings of the first letter of a button's text
+proc button_bind {args} {
+    global altkey
+
+    getopt opts {alt} $args
+    if {$opts(alt) > 0 } {
+        set prefix ${altkey}-
+    } else {
+        set prefix ""
+    }
+    set widget [lindex $opts(EXTRA) 0]
+    set window [winfo toplevel $widget]
+    set buttontext [$widget cget -text]
+
+    foreach i "tolower toupper" {
+        bind $window "<${prefix}Key-[string $i [string index $buttontext 0 ] ]>" "$widget invoke"
+    }
+}
+
+# 'spinboxes' are only in tcl/tk 8.4, don't want to require that to run eTktab
+# This code based on a Richard Suchenwirth post to wiki.tcl.tk
+proc arrowbuttons {w placement upcommand dncommand} {
+    global prefs
+    global images
+
+    #create arrow images to be used in homemade 'spinboxes'
+    if {![info exists images($placement.up)]} {
+        set images($placement.up) [image create bitmap -data "#define i_width 5\n#define i_height 3\nstatic char i_bits = {\n4,14,31}"]
+        set images($placement.dn) [image create bitmap -data "#define i_width 5\n#define i_height 3\nstatic char i_bits = {\n31,14,4}"]
+    }
+
+    frame $w
+    foreach i {up dn} {
+        set arr $w.$i
+        # add repeating fuctionality to arrow button... more code based on wiki
+        proc repeat$arr {arr pause} {
+            if {![set ::ok_$arr]} {
+                return
+            }
+            $arr config -relief sunken
+            uplevel eval [$arr cget -command]
+            after $pause "repeat$arr $arr 100"
+        }
+        button $arr -image $images($placement.$i) -width 10 -height 4 -command [set ${i}command ]
+        bind $arr <ButtonPress-1> {set ::ok_%W 1; repeat%W %W 1000}
+        bind $arr <ButtonRelease-1> "set ::ok_%W 0; $arr config -relief raised"
+        bind $arr <Leave> [ bind Button <Leave> ]
+        bind $arr <Enter> [ bind Button <Enter> ]
+        bindtags $arr [lreplace [bindtags $arr] 1 1 ]
+    }
+    pack $w.up -anchor n 
+    pack $w.dn -anchor s 
+}
+
+# process 'shorthand' notation for creating a menubutton
+proc my_menubutton {mb_name args} {
+    set menu_items [lrange $args end end]
+    set args [lreplace $args end end]
+    eval "menubutton $mb_name -menu $mb_name.menu $args"
+    eval "my_menu $mb_name.menu $menu_items"
+    set mb_width 0
+}
+
+# process 'shorthand' notation for creting a menu
+proc my_menu {menu_name menu_items} {
+    menu $menu_name
+    foreach item $menu_items {
+        switch -exact -- [lindex $item 0] {
+            {command} 
+                {set item [linsert $item [ expr [ llength $item ] - 1] -command]}
+            {cascade} {
+                my_menu $menu_name.[lindex $item 1] [lindex $item 2]
+                set item [lreplace $item 1 2 -menu $menu_name.[lindex $item 1]] 
+            }
+        }
+        eval "$menu_name add $item"
+    }
+}
+
+# call standard tk color dialog, and change OK, Cancel button text
+proc my_chooseColor {args} {
+    global messages
+
+    set frame .__tk__color.bot
+    after idle "catch {$frame.ok configure -text $messages(button:ok)}"
+    after idle "catch {button_bind -alt $frame.ok}"
+    after idle "catch {$frame.cancel configure -text $messages(button:cancel)}"
+    after idle "catch {button_bind -alt $frame.cancel}"
+    return [ eval [ linsert $args 0 tk_chooseColor ] ]
+}
+
+# call standard tk file dialog, and change Open, Save, Cancel button text
+proc my_filedialog {args} {
+    global messages
+
+    set w .__tk_filedialog
+    set parent [ lsearch -exact $args -parent ]
+    if {$parent > 0} {
+        set w [ lindex $args [expr $parent + 1] ]$w
+    }
+    if { [ lindex $args 0 ] == "tk_getOpenFile" } {
+        set buttontext(f2.ok) $messages(string:open)
+    } else {
+        set buttontext(f2.ok) $messages(string:save)
+    }
+    set buttontext(f3.cancel) $messages(button:cancel)
+
+    foreach widget [ array names text ] {
+        after idle "catch {$w.$widget configure -text $buttontext($widget)}"
+        after idle "catch {button_bind -alt $w.$widget}"
+    }
+    return [ eval $args ]
+}
+
+# call standard tk dialog creation proc, and add keyboard bindings
+proc my_dialog {args} {
+    global curr_namespace
+    variable ${curr_namespace}::tabwin
+
+    set w "${tabwin}.dialog"
+    for { set i 0 } { $i < [ expr [llength $args] - 4] } { incr i } {
+        after idle button_bind ${w}.button$i
+    }
+    return [ eval [ linsert $args 0 tk_dialog $w ] ]
+}
+
+# proc to handle windows/mac documents dragged to eTktab
+proc tkOpenDocument {args} {
+    global used_dragdrop
+
+    set used_dragdrop 1
+    foreach file $args {
+        new_tab -file $file
+    }
+}
+
+# tkOpenDocument moved to ::tk::mac namespace in tk 8.4
+if { ($my_platform(platform) == "macintosh") && ( $tcl_version > 8.3 ) } {
+    rename tkOpenDocument ::tk::mac::OpenDocument
+}
+
+# close all windows, checking if each document was saved
+proc quit_safe {args} {
+    global curr_namespace
+
+    each_namespace {
+        set currwin [set [ string range $curr_namespace 2 end ]::tabwin] 
+        if { [ focus ] != $currwin} {
+            switchfocus $currwin
+        } 
+        close_tab
+    }
+}
+
+# redraw menu of available windows
+proc refresh_winmenu {} {
+    catch {.docmenu delete 0 end}
+    each_namespace {
+        set currwin [set [ string range $curr_namespace 2 end ]::tabwin] 
+        .docmenu add radiobutton -label [lrange [wm title $currwin] 2 end] -command "switchfocus $currwin" -value $curr_namespace -variable ::curr_namespace
+    }
+}
+
+# change which window has focus
+proc switchfocus {currwin} {
+    catch {wm deiconify $currwin}
+    raise $currwin
+    focus $currwin
+}
+
+# about window
+proc about {} {
+    global author
+    global version
+    global webpage
+    global messages
+
+    if { [ basic_transient -nocancel .about $messages(title:about) ] == -1 } {
+        return
+    }
+
+    label .about.text -text [subst -nobackslashes -nocommands $messages(dialog:about)]
+    pack .about.text -side top -fill x
+}
+
+# help window
+proc help {} {
+    global prefs
+    global my_platform
+    global version
+    global keynames
+    global messages
+    global keyprior
+    global keynext
+    global clover
+
+    if { [ winfo exists .helpwin ] } {
+        raise .helpwin
+        focus .helpwin
+        return
+    }
+    toplevel .helpwin -class Textwin
+    wm title .helpwin [subst -nocommands -nobackslashes $messages(title:help) ]
+    frame .helpwin.msg_frame -background $prefs(color_menu_bg)
+    frame .helpwin.buttons -background $prefs(color_menu_bg)
+    button .helpwin.buttons.can -background $prefs(color_menu_bg) -font $prefs(font_statusbar) -highlightbackground $prefs(color_menu_bg) -foreground $prefs(color_menu_fg_left) -text $messages(string:close) -default active -command {destroy .helpwin}
+
+    text .helpwin.txt -font $prefs(font_help) -foreground $prefs(color_help_fg) -background $prefs(color_help_bg) -width 80 -height 40 -yscrollcommand ".helpwin.scrolly set" -xscrollcommand ".helpwin.scrollx set" 
+    scrollbar .helpwin.scrollx -background $prefs(color_menu_bg) -highlightbackground $prefs(color_menu_bg) -activebackground $prefs(color_menu_bg) -orient horizontal -command ".helpwin.txt xview"
+    scrollbar .helpwin.scrolly -background $prefs(color_menu_bg) -highlightbackground $prefs(color_menu_bg) -activebackground $prefs(color_menu_bg) -command ".helpwin.txt yview"
+    
+    #put actual help contents in window
+    .helpwin.txt insert end [subst -nocommands -nobackslashes $messages(help:start)]
+    .helpwin.txt insert end [subst -nocommands -nobackslashes $messages(help:$my_platform(platform)_mouse)]
+    .helpwin.txt insert end [subst -nocommands -nobackslashes $messages(help:end)]
+    
+    .helpwin.txt configure -state disabled
+    # some versions of macos won't allow us to change button bg color,font
+    if {$my_platform(platform)!="macintosh"} {
+        .helpwin.buttons.can configure -font $prefs(font_statusbar)
+    } else {
+       # change font of each cloverleaf char to 'Chicago'
+       .helpwin.txt tag configure chicago -font "Chicago [lrange $prefs(font_help) 1 end]"
+       set nextclover [.helpwin.txt search -forwards -exact -- "\x11" {1.0} end]
+       while { $nextclover != ""} {
+           .helpwin.txt tag add chicago $nextclover
+           set nextclover "$nextclover + 1 chars"
+           set nextclover [.helpwin.txt search -forwards -exact -- "\x11" $nextclover end]
+       }
+    }
+    # keybindings
+    bind .helpwin <Key-Return> ".helpwin.buttons.can invoke"
+    bind .helpwin <Key-Left> ".helpwin.txt xview scroll -1 units"
+    bind .helpwin <Key-Right> ".helpwin.txt xview scroll 1 units"
+    bind .helpwin <Key-Up> ".helpwin.txt yview scroll -1 units"
+    bind .helpwin <Key-Down> ".helpwin.txt yview scroll 1 units"
+    bind .helpwin <Key-$keyprior> ".helpwin.txt yview scroll -1 pages"
+    bind .helpwin <Key-$keynext> ".helpwin.txt yview scroll 1 pages"
+    bind .helpwin <Key-Home> ".helpwin.txt yview moveto 0"
+    bind .helpwin <Key-End> ".helpwin.txt yview moveto 1"
+
+    pack .helpwin.buttons.can -pady 4 -side left
+
+    grid rowconfig .helpwin.msg_frame 0 -weight 1 -minsize 0
+    grid columnconfig .helpwin.msg_frame 0 -weight 1 -minsize 0
+    grid .helpwin.txt -in .helpwin.msg_frame -row 0 -column 0 -rowspan 1 -columnspan 1 -sticky news
+    grid .helpwin.scrolly -in .helpwin.msg_frame -row 0 -column 1 -rowspan 1 -columnspan 1 -sticky news
+    grid .helpwin.scrollx -in .helpwin.msg_frame -row 1 -column 0 -rowspan 1 -columnspan 1 -sticky news
+    
+    pack .helpwin.buttons -side top -fill both
+    pack .helpwin.msg_frame -side top -fill both -expand true
+    #ms-windows doesn't seem to want to focus on our new toplevel windows
+    if {$my_platform(platform)=="windows"} {
+        update idletasks
+        focus -force .helpwin
+    }
+}
+
+
+#######################################
+### FUNCTIONS THAT ACT ON CURRENTLY FOCUSED TAB WINDOW
+###
+
+#
+# back end stuff, user doesn't call directly
+#
+
+# initialize all globals that do get reset at new document
+proc initialize_vars {new_namespace} {
+    global messages
+    global prefs
+    variable ${new_namespace}::basefret
+    variable ${new_namespace}::data_end
+    variable ${new_namespace}::fret
+    variable ${new_namespace}::insert_mode
+    variable ${new_namespace}::mode_old
+    variable ${new_namespace}::mark
+    variable ${new_namespace}::num_strings
+    variable ${new_namespace}::pos
+    variable ${new_namespace}::saved
+    variable ${new_namespace}::string
+    variable ${new_namespace}::tabwin
+    variable ${new_namespace}::winnum
+    variable ${new_namespace}::score_width
+    variable ${new_namespace}::row_sep_lines
+    variable ${new_namespace}::text
+
+    # which window are we in?
+    set winnum [ namespace tail $new_namespace ]
+    set tabwin .tabwin$winnum
+
+    # chord or note insertion type
+    set insert_mode $messages(string:lead) 
+    set mode_old $insert_mode
+
+    # where do we start on the fretboard?
+    set fret 0
+    set string 0            
+    set basefret 0
+
+    # erase any "mark"
+    set mark -1
+    
+    # is the file saved ?
+    set saved 1
+              
+    # current position
+    set pos 0
+    
+    set data_end 0
+
+    set score_width $prefs(score_width)
+
+    # blank lines between scores
+    set row_sep_lines $prefs(row_sep_lines)
+
+    initialize_numstrings $new_namespace
+}
+
+proc initialize_numstrings {namespace} {
+    global blank_tab
+    global blank_asciitab
+    global prefs
+    variable ${namespace}::num_strings
+    variable ${namespace}::tab_data
+    variable ${namespace}::tab_ascii
+    variable ${namespace}::tuning
+
+    array set tuning $prefs(tuning_$num_strings)
+
+    # start with blank tablature
+    set tab_data $blank_tab($num_strings)
+    array set tab_ascii $blank_asciitab($num_strings)
+
+    process_formatting $namespace
+}
+
+# empty the undo/redo buffers
+proc history_clear {} {
+    global curr_namespace
+    variable ${curr_namespace}::redo
+    variable ${curr_namespace}::undo
+
+    foreach i {tab_data pos tuning mark last_action text text_pos text_mark} {
+            set undo($i) ""
+            set redo($i) ""
+    }
+}
+
+# add to the undo buffer
+proc history_add {last_action} {
+    global curr_namespace
+    global histsteps
+    global messages
+    variable ${curr_namespace}::redo
+    variable ${curr_namespace}::undo
+    variable ${curr_namespace}::tabwin
+    
+    set text_pos [$tabwin.tablature index insert]
+    set text_mark ""
+    catch { set text_mark [$tabwin.tablature index lyr_selection] }
+    foreach i {tuning text} {
+        variable ${curr_namespace}::$i
+        set redo($i) ""
+        listshift undo $i $histsteps [ array get $i ]
+    }
+    foreach i {tab_data pos mark} {
+        variable ${curr_namespace}::$i
+        set redo($i) ""
+        listshift undo $i $histsteps [set $i]
+    } 
+    foreach i {last_action text_pos text_mark} {
+        set redo($i) ""
+        listshift undo $i $histsteps [set $i]
+    }
+    set_saved 0
+    ghost_menu normal menu:undo undo_menu $last_action
+    ghost_menu disabled menu:redo redo_menu {}
+}
+
+# replace current tab with most recent in undo buffer
+proc history_undo {} {
+    global curr_namespace
+    global histsteps
+    global messages
+    variable ${curr_namespace}::redo
+    variable ${curr_namespace}::undo
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::insert_mode
+
+    if { $undo(pos) == "" } {
+        return
+    }
+
+    listshift redo last_action $histsteps [ listpop undo last_action ]
+    listshift redo text_pos $histsteps [ $tabwin.tablature index insert ]
+    set text_mark ""
+    catch { set text_mark [$tabwin.tablature index lyr_selection] }
+    listshift redo text_mark $histsteps $text_mark
+    foreach i {tuning text} {
+        variable ${curr_namespace}::$i
+        listshift redo $i $histsteps [ array get $i ]
+        array set $i [ listpop undo $i ]
+    }
+    foreach i {tab_data pos mark} {
+        variable ${curr_namespace}::$i
+
+        listshift redo $i $histsteps [set $i]
+        set $i [ listpop undo $i ]
+    }
+    set_saved 0
+    redraw_full
+    ghost_menu normal menu:redo redo_menu [lindex $redo(last_action) 0]
+    set undo_length [ llength $undo(pos) ] 
+    if { $undo_length == 0 } {
+        ghost_menu disabled menu:undo undo_menu {}
+    } else {
+        ghost_menu normal menu:undo undo_menu [lindex $undo(last_action) 0]
+    }
+    if { $insert_mode == $messages(string:lyrics) } {
+        $tabwin.tablature mark set insert [ listpop undo text_pos ]
+        $tabwin.tablature see insert
+        set text_mark [ listpop undo text_mark ]
+        if { $text_mark == "" } {
+            catch {$tabwin.tablature mark unset lyr_selection}
+            ghost_cutcopy disabled
+        } else {
+            $tabwin.tablature mark set lyr_selection $text_mark
+            ghost_cutcopy normal
+        } 
+        recolor_tab_full -notwhitespace
+    } elseif { $mark == -1 } {
+        ghost_cutcopy disabled
+    } else {
+        ghost_cutcopy normal
+    }
+}
+
+# replace current tab with most recent in redo buffer
+proc history_redo {} {
+    global curr_namespace
+    global histsteps
+    global messages
+    variable ${curr_namespace}::redo
+    variable ${curr_namespace}::tuning
+    variable ${curr_namespace}::undo
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::insert_mode
+
+    if { $redo(pos) == "" } {
+        return
+    }
+
+    listshift undo last_action $histsteps [ listpop redo last_action ]
+    listshift undo text_pos $histsteps [ $tabwin.tablature index insert ]
+    set text_mark ""
+    catch { set text_mark [$tabwin.tablature index lyr_selection] }
+    listshift undo text_mark $histsteps $text_mark
+    foreach i {tuning text} {
+        variable ${curr_namespace}::$i
+        listshift undo $i $histsteps [ array get $i ]
+        array set $i [ listpop redo $i ]
+    }
+    foreach i {tab_data pos mark} {
+        variable ${curr_namespace}::$i
+
+        listshift undo $i $histsteps [set $i ]
+        set $i [ listpop redo $i ]
+    }
+    set_saved 0
+    redraw_full
+    ghost_menu normal menu:undo undo_menu [lindex $undo(last_action) 0]
+    set redo_length [ llength $redo(pos) ] 
+    if { $redo_length == 0 } {
+        ghost_menu disabled menu:redo redo_menu {}
+    } else {
+        ghost_menu normal menu:redo redo_menu [lindex $redo(last_action) 0]
+    }
+    if { $insert_mode == $messages(string:lyrics) } {
+        $tabwin.tablature mark set insert [ listpop redo text_pos ]
+        $tabwin.tablature see insert
+        set text_mark [ listpop redo text_mark ]
+        if { $text_mark == "" } {
+            catch {$tabwin.tablature mark unset lyr_selection}
+            ghost_cutcopy disabled
+        } else {
+            $tabwin.tablature mark set lyr_selection $text_mark
+            ghost_cutcopy normal
+        }
+        recolor_tab_full -notwhitespace
+    } elseif { $mark == -1 } {
+        ghost_cutcopy disabled
+    } else {
+        ghost_cutcopy normal
+    }
+}
+
+# put human readable copy of marked tablature in system's clipboard
+proc update_clipboard {} {
+    global curr_namespace
+    global clip
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+
+    selection own -selection "CLIPBOARD" .
+    selection own -selection "PRIMARY" .
+    selection own -selection "ETKTAB" .
+    clipboard clear
+    clipboard append $clip
+}
+
+# push out clipboard contents 
+proc clipboard_dump {offset maxbytes} {
+    global clip
+
+    return [string range $clip $offset [expr $offset + $maxbytes ] ]
+}
+    
+# push out paste buffer contents
+proc pastebuf_dump {offset maxbytes} {
+    global pastebuf
+
+    return [string range $pastebuf $offset [expr $offset + $maxbytes ] ]
+}
+
+# change enable/disable state of cut,copy,clear menu items
+proc ghost_cutcopy {state} {
+    global curr_namespace
+    variable ${curr_namespace}::mark
+
+    foreach item {cut copy clear} {
+            ghost_menu $state menu:$item
+    }
+}
+
+# change enable/disable (and/or text) of menu items
+proc ghost_menu {state textkey args} {
+    global curr_namespace
+    global messages
+    global gui_label
+    variable ${curr_namespace}::tabwin
+
+    # read in any variables necessary for variable substitution below
+    array set data $args
+    foreach varname [array names data] {
+        set $varname $data($varname)
+    }
+    foreach widget $gui_label($textkey) {
+        $tabwin.[lindex $widget 0] entryconfigure [lindex $widget 1] -state $state -label [subst -nocommands -nobackslashes $messages($textkey)]
+    }
+}
+
+# change color of 'save' menu item
+proc set_saved {status} {
+    global curr_namespace
+    global prefs
+    global messages
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::saved
+
+    set saved $status
+    if {$status == 1 } {
+        set state disabled
+    } else {
+        set state normal
+    }
+
+    $tabwin.msg_frame.left_frame.file.menu entryconfigure $messages(string:save) -state $state
+}
+
+# set values that depend on the text formatting values
+proc process_formatting {namespace} {
+    global initial_col
+    global col_width
+    variable ${namespace}::num_strings
+    variable ${namespace}::score_width
+    variable ${namespace}::col_max
+    variable ${namespace}::row_sep
+    variable ${namespace}::row_sep_lines
+
+    # set last position possible on a line
+    set col_max [ expr int (($score_width - $initial_col) / $col_width) ]
+
+    # blank lines between scores
+    set row_sep ""
+    for { set i 0 } { $i < $row_sep_lines } { incr i } {
+        append row_sep "\n"
+    }
+}
+
+# finds the right col and row in function of pos
+proc calc_rowcol {position} {
+    global curr_namespace
+    variable ${curr_namespace}::col_max
+
+    set column [ expr $position % $col_max ]
+    set score [ expr ($position - $column) / $col_max ]
+    return "row $score col $column"
+}    
+
+# replaces notes on all strings with note sent as arg
+proc replace_pos {fill} {
+    global curr_namespace
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::tab_data
+
+    for { set i 0 } { $i < $num_strings } { incr i } {
+        set tab_data [ lreplace $tab_data $pos $pos [ lreplace [ lindex $tab_data $pos ] $i $i $fill ] ]
+    }
+    asciitab_replace $pos 1 1
+}
+
+# due to moving of $mark or $pos, need to recolor a range of tab
+proc recolor_tab_full {args} {
+    global col_width
+    global curr_namespace
+    global initial_col
+    global col_width
+    global messages
+    variable ${curr_namespace}::col_max
+    variable ${curr_namespace}::row_sep_lines
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::string
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::data_end
+    variable ${curr_namespace}::insert_mode
+    variable ${curr_namespace}::score_width
+    variable ${curr_namespace}::tab_data
+    
+    # this loop removes old color coding en masse
+    foreach i "marked currpos currstring" {
+        catch { $tabwin.tablature tag remove $i 0.0 end }
+    }
+
+    # draw whitespace appropriately
+    if { [ string trim $args ] != "-notwhitespace" } {
+        catch { $tabwin.tablature tag remove whitespace 0.0 end }
+        for { set i 0 } { $i <= $data_end } { incr i } {
+            if { [ lindex [ lindex $tab_data $i ] 0 ] == "-16" } {
+                recolor_tab_pos $i
+            }
+        }
+    }
+
+    # set color for marked area
+    if { $insert_mode != $messages(string:lyrics) } {
+        # selected tab
+        if {$mark!=-1} {
+            array set marklow [ calc_rowcol [ calc_min $pos $mark ] ]
+            array set markhi [ calc_rowcol [ calc_max $pos $mark ] ]
+
+            for { set i $marklow(row) } { $i <= $markhi(row) } { incr i } {
+                if { $i == $marklow(row) } {
+                    set leftedge [ expr $marklow(col) * $col_width + $initial_col ]
+                } else {
+                    set leftedge $initial_col
+                }
+                if { $i == $markhi(row) } {
+                    set rightedge [ expr ($markhi(col)+1) * $col_width + $initial_col ]
+                } else {
+                    set rightedge $score_width
+                }
+    
+                for { set j 0 } { $j < $num_strings } { incr j } {
+                    $tabwin.tablature tag add marked "line$i + $j lines + $leftedge chars" "line$i + $j lines + $rightedge chars"
+                }
+            }
+        } 
+
+        #set color for current position
+        array set current [ calc_rowcol $pos ]
+        $tabwin.tablature mark set start "line$current(row) + $string lines + [expr $current(col) * $col_width + $initial_col ] chars"
+        $tabwin.tablature tag add currstring start "start + $col_width chars"
+        for { set i 0 } { $i < $num_strings } { incr i } {
+            $tabwin.tablature mark set start "line$current(row) + $i lines + [expr $current(col) * $col_width + $initial_col ] chars"
+            $tabwin.tablature tag add currpos start "start + $col_width chars"
+        }
+        $tabwin.tablature mark unset start
+    } else {
+        #add currpos color to current textbox
+        array set charinfo [ find_textpos insert ]
+        $tabwin.tablature tag add currpos $charinfo(textstart) "$charinfo(textend) + 1 chars"
+        # color selected area
+        if { [ catch {$tabwin.tablature index lyr_selection} ] == 0 } {
+            if { [ $tabwin.tablature compare insert < lyr_selection ] } {
+                $tabwin.tablature tag add marked insert lyr_selection
+            } else {
+                $tabwin.tablature tag add marked lyr_selection insert
+            }
+        }
+    }
+}
+
+# recolor a single position of tab
+proc recolor_tab_pos {pos_todraw args} {
+    global curr_namespace
+    global initial_col
+    global col_width
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::tab_data
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::string
+
+    array set rowcol [ calc_rowcol $pos_todraw ]
+
+    # pick the color for the text based on whether we're in a cut/paste 
+    # selection zone or not, and whether or not we're under the cursor
+    array set tag {marked remove currpos remove whitespace remove}
+    # make whitespace visible with stipple
+    if { [ string trim [ lindex [ lindex $tab_data $pos_todraw ] 0 ] ] == "-16" } {
+        set tag(whitespace) add
+        #puts "add whitespace to $pos_todraw"
+    }
+    if { ($mark != -1) && ($pos_todraw >= [ calc_min $mark $pos ]) && ($pos_todraw <= [ calc_max $mark  $pos ]) } {
+        set tag(marked) add
+    }
+    if { $pos == $pos_todraw } {
+        set tag(currpos) add
+    }
+    for { set i 0 } { $i < $num_strings } { incr i } {
+        set tag(currstring) remove
+        # pick a color based on whether we're at the exact string and
+        #  position of the cursor 
+        if { ($i == $string)&&($pos == $pos_todraw) } { 
+            set tag(currstring) add
+        }
+        $tabwin.tablature mark set start "line$rowcol(row) + $i lines + [ expr $rowcol(col) * $col_width + $initial_col ] chars"
+        foreach j "marked currpos currstring whitespace" {
+            catch { $tabwin.tablature tag $tag($j) $j start "start + $col_width chars"}
+        }
+    }
+    $tabwin.tablature mark unset start
+}
+    
+# redraw single position of tablature
+proc redraw_pos {pos_todraw} {
+    global curr_namespace
+    global initial_col
+    global col_width
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::tab_ascii
+
+    # allow writes to the window
+    $tabwin.tablature configure -state normal
+    array set rowcol [ calc_rowcol $pos_todraw ]
+
+    # change contents of 'predrawn tab' array
+    asciitab_replace $pos_todraw 1 1
+    for { set i 0 } { $i < $num_strings } { incr i } {
+        # change contents of tab window
+        $tabwin.tablature mark set start "line$rowcol(row) + $i lines + [ expr $rowcol(col) * $col_width + $initial_col ] chars"
+        $tabwin.tablature delete start "start + $col_width chars"
+        $tabwin.tablature mark unset start
+         
+        $tabwin.tablature insert "line$rowcol(row) + $i lines + [ expr $rowcol(col) * $col_width + $initial_col ] chars" [ string range $tab_ascii($i) [expr $pos_todraw * $col_width ] [expr ($pos_todraw + 1) * $col_width - 1] ]
+    }
+
+    recolor_tab_pos $pos_todraw
+    # re-disable writes to window, so user can't type arbitrary text
+    $tabwin.tablature configure -state disabled
+    see_currpos
+}
+
+# make sure a position is visible in the tablaure
+proc see_currpos {} {
+    global curr_namespace
+    global initial_col
+    global col_width
+    variable ${curr_namespace}::col_max
+    variable ${curr_namespace}::row_sep_lines
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::string
+    variable ${curr_namespace}::tabwin
+
+    array set current [ calc_rowcol $pos ]
+
+    $tabwin.tablature see "line$current(row) - $row_sep_lines lines"
+    $tabwin.tablature see "line$current(row) + $num_strings lines + $row_sep_lines lines"
+    # added the following because xview stuff doesn't work in 'see?'
+    set xvisible [$tabwin.tablature xview]
+    if {[lindex $xvisible 1] < 1} {
+        # * 1.0 means give me a floating point, not an integer
+        set xview [ calc_max 0 [ expr (1.0*$current(col) / $col_max) - (([lindex $xvisible 1] - [lindex $xvisible 0]) / 2) ] ]
+        $tabwin.tablature xview moveto $xview
+    }
+}
+
+
+# delete and then redraw the whole tablature. 
+proc redraw_full {} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::tab_data
+    variable ${curr_namespace}::tab_ascii
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::insert_mode
+
+    set text_mark ""
+    catch { set text_mark [$tabwin.tablature index lyr_selection] }
+    asciitab_replace all 0 0
+    redisplay_toend start
+    if { $insert_mode == $messages(string:lyrics) } {
+        if { $text_mark != "" } {
+            catch {$tabwin.tablature mark set lyr_selection $text_mark}
+            recolor_tab_full
+        }
+    }
+}
+
+# clear out, then redisplay some of the tab window's contents
+proc redisplay_toend {args} {
+    global curr_namespace
+    variable ${curr_namespace}::col_max
+    variable ${curr_namespace}::row_sep_lines
+    variable ${curr_namespace}::row_sep
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::data_end
+
+    set insert [ $tabwin.tablature index insert ]
+    if { [ lindex $args 0 ] == "-nosymbols" } {
+        set startpos [ lindex $args 1 ]
+    } else {
+        set startpos [ lindex $args 0 ]
+    }
+    # allow writes to the window
+    set oldstate [ $tabwin.tablature cget -state ]
+    $tabwin.tablature configure -state normal
+
+    # even redraw header, if asked to redraw from pos "start"
+    if {$startpos == "start"} {
+        set deletefrom 1.0
+        if { [ lindex $args 0 ] == "-nosymbols" } {
+            append redraw [ text_draw_newlines -nosymbols header ]
+        } else {
+            append redraw [ text_draw_newlines header ]
+        }
+        set rowcol(row) 0
+        set startpos 0
+    } else {
+        array set rowcol [ calc_rowcol $startpos ]
+        # back up to start of line of tab and delete from there to end
+        # (easier to delete from the beginning of a line of tab)
+        set startpos [ expr $startpos - $rowcol(col) ]
+        set deletefrom "line$rowcol(row) - $row_sep_lines lines"
+        set redraw ""
+    }
+    # doesn't delete correctly unless deletion leaves newline as last char
+    $tabwin.tablature delete $deletefrom delend
+
+    # draw a row at a time, and keep track of relative positions
+    set row_curr [ expr $rowcol(row) - 1]
+    for { set i $startpos } { $i <= $data_end } { incr i $col_max } {
+        incr row_curr
+        set newline [tabdata_to_asciitab $i [ expr $i + $col_max - 1] ]
+        if { [ lindex $args 0 ] == "-nosymbols" } {
+            append newline [ text_draw_newlines -nosymbols line$row_curr ]
+        } else {
+            append newline [ text_draw_newlines line$row_curr ]
+        }
+        set linechars($row_curr) [ string length $newline ]
+        incr linechars($row_curr) -$row_sep_lines
+        append redraw $newline
+    }
+    if { [ lindex $args 0 ] == "-nosymbols" } {
+        set footer [ text_draw_newlines -nosymbols footer ]
+    } else {
+        set footer [ text_draw_newlines footer ]
+    }
+    append redraw $row_sep $footer
+
+    # insert the new text
+    $tabwin.tablature insert delend $redraw
+    # put textwin marks in text for locating various points, later
+    $tabwin.tablature mark set header 1.0
+    $tabwin.tablature mark set footer "delend - [ string length $footer] chars"
+    set lastmark "footer"
+    for { set i $row_curr } { $i >= $rowcol(row) } { incr i -1 } {
+        $tabwin.tablature mark set "line$i" "$lastmark - $linechars($i) chars - $row_sep_lines chars"
+        set lastmark "line$i"
+    }
+    recolor_tab_full
+
+    catch {$tabwin.tablature mark set insert $insert}
+    $tabwin.tablature see insert
+    see_currpos
+    # re-disable writes to window, so user can't type arbitrary text
+    $tabwin.tablature configure -state $oldstate
+}
+
+# output (en masse) ascii tab from the tab data
+proc tabdata_to_asciitab {startpos endpos} {
+    global curr_namespace
+    global col_width
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::tab_ascii
+    variable ${curr_namespace}::row_sep
+    variable ${curr_namespace}::tuning
+    variable ${curr_namespace}::data_end
+    variable ${curr_namespace}::col_max
+    
+    set redraw ""
+    if {($endpos == "end")||($endpos>$data_end)} {
+        set ascii_end [expr [string length $tab_ascii(0) ] - 1]
+    } else {
+        set ascii_end [ expr ( $endpos + 1) * $col_width - 1 ]
+    }
+
+    # draw a line at a time of tab
+    set linelength [ expr ($col_max + 1) * $col_width ]
+    for { set startline [ expr $startpos * $col_width ] } { $startline <= $ascii_end } {incr startline $linelength } {
+        append redraw $row_sep
+        set endline [calc_min [ expr $startline + $linelength - 1 ] $ascii_end]
+        #  do a guitar string at a time
+        for { set t 0 } { $t < $num_strings } { incr t } {
+                append redraw "$tuning($t)|[string range $tab_ascii($t) $startline $endline]\n"
+        }
+    }
+    return $redraw
+}
+
+# update predrawn ascii tab array
+proc asciitab_replace {at_pos cols_removeold cols_addnew} {
+    global curr_namespace
+    global col_width
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::tab_data
+    variable ${curr_namespace}::tab_ascii
+    variable ${curr_namespace}::data_end
+
+    for { set i 0 } { $i < $num_strings } { incr i } {
+        # grab tablature before and after position we're changing/deleting
+        if { $at_pos == "all" } {
+            set before_ascii($i) ""
+            set after_ascii($i) ""
+            set at_pos 0
+            set cols_addnew [llength $tab_data]
+        } elseif { $at_pos == 0 } {
+            set before_ascii($i) ""
+            set after_ascii($i) "[string range $tab_ascii($i) [ expr ($at_pos + $cols_removeold) * $col_width ] end]"
+        } elseif { $at_pos == "end" } {
+            set before_ascii($i) $tab_ascii($i)
+            set after_ascii($i) ""
+        } else {
+            set before_ascii($i) "[string range $tab_ascii($i) 0 [expr $at_pos * $col_width - 1]]"
+            set after_ascii($i) "[string range $tab_ascii($i) [ expr ($at_pos + $cols_removeold) * $col_width ] end]"
+        }
+        set insert_ascii($i) ""
+        # drop in any tab we've been asked to insert
+        for {set j 0} { $j < $cols_addnew } { incr j } {
+            set pos_todraw [ expr $at_pos + $j ]
+	    append insert_ascii($i) [fretnum_to_asciitab [string trim [ lindex [ lindex $tab_data $pos_todraw ] $i ] ] ]
+        }
+        set tab_ascii($i) "$before_ascii($i)$insert_ascii($i)$after_ascii($i)"
+    }
+    set data_end [ expr [ llength $tab_data ] - 1 ]
+}
+
+# redisplay contents of one text section
+proc text_redisplay_section {section} {
+    global curr_namespace
+    variable ${curr_namespace}::tabwin
+
+    array set secinfo [find_textpos $section]
+    set startindex [ $tabwin.tablature index $section ]
+    set redraw_text [ text_draw_newlines $section ]
+
+    $tabwin.tablature delete $secinfo(textstart) "$secinfo(textend) + 2 chars"
+    $tabwin.tablature insert $secinfo(textstart) $redraw_text
+    $tabwin.tablature mark set $section $startindex
+    recolor_tab_full
+}
+
+# add in carriage returns and end-of-textbox symbols, do line wrap
+proc text_draw_newlines {args} {
+    global curr_namespace
+    variable ${curr_namespace}::text
+    variable ${curr_namespace}::score_width
+
+    # drop the section symbol from the end when printing to the printer
+    if { [ lindex $args 0 ] == "-nosymbols" } {
+        set section [ lindex $args 1 ]
+        set endsymbol ""
+        # in "printer" mode... don't print empty sections
+        if {$text($section)=="\x07"} {
+            return ""
+        }
+    } else {
+        set section [ lindex $args 0 ]
+        set endsymbol "\xA7"
+    }
+    if {![info exists text($section)]} {
+        set text($section) "\x07"
+    }
+    set end "\n"
+    set returnval ""
+
+    # doublecheck that we haven't somehow lost the trailing return char
+    if { [ string range $text($section) end end ] != "\x07"} {
+        set string($section) "$string($section)\x07"
+    }
+    set temp $text($section)
+    # data uses \x07 as carriage return... easier to deal with at load/save
+    while {[ set newline [ string first "\x07" $temp ] ] != -1} {
+        # chop up lines by line length, unless we see a hard return 
+        while {[ set newline [string first "\x07" $temp ] ] >= $score_width} {
+            # split line at the start of a word, if possible
+            set endline [ string wordstart $temp [ expr $score_width - 1 ] ]
+            if { $endline > 0 } {
+                append returnval [ string range $temp 0 [ expr $endline - 2 ] ] "\n"
+                set temp [ string range $temp $endline end ]
+            } else {
+                # otherwise, split by line length
+                append returnval [ string range $temp 0 [ expr $score_width - 1 ] ] "\n"
+                set temp [ string range $temp $score_width end ]
+            }
+        }
+        # put a section symbol after the last character inserted by the user
+        if { $newline == [ expr [string length $temp ] - 1 ] } {
+            set end "$endsymbol\n"
+        }
+        append returnval [ string range $temp 0 [ expr $newline - 1 ] ] "$end"
+        set temp [ string range $temp [ expr $newline + 1 ] end ]
+    }
+    return $returnval
+}
+
+# return various info. about the text position queried when in lyrics mode
+proc find_textpos {textindex} {
+    global curr_namespace
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::row_sep_lines
+    
+    set section [ findmark previous "$textindex + 1 chars" ]
+    set nextsection [ findmark next "$textindex + 1 chars" ]
+    switch  -exact -- $section {
+        {header} {
+            set textstart header
+            set textend "$nextsection - $row_sep_lines lines - 2 chars"
+        }
+        {footer}
+            -
+        {delend}
+            -
+        {} {
+            # clicking below the footer may yield "" or delend as prev. mark
+            set textstart footer
+            set textend "delend - 2 chars"
+        }
+        default {
+            # lyrics lines
+            set textstart "$section + $num_strings lines"
+            set textend "$nextsection - $row_sep_lines lines - 2 chars"
+        }
+    }
+    # what is the corresponding location in the asciitab string?
+    set lyrics_pos [ string length [ $tabwin.tablature get $textstart $textindex ] ]
+    return "section $section lyrics_pos $lyrics_pos textstart {$textstart} textend {$textend}"
+}
+
+# generalized proc to move cursor up/down/left/right in lyrics mode
+proc text_cursor {adjust} {
+    global curr_namespace
+    variable ${curr_namespace}::tabwin
+
+    array set charinfo [ find_textpos insert ]
+    if { [ lindex $adjust 0 ] == "+" } {
+        set comparison "<="
+        set limit $charinfo(textend)
+    } else {
+        set comparison ">="
+        set limit $charinfo(textstart)
+    }
+    # don't allow user to roll past edge of this textbox
+    if { [ $tabwin.tablature compare "insert $adjust" $comparison $limit ] } {
+       $tabwin.tablature mark set insert "insert $adjust"
+       $tabwin.tablature see insert
+    }
+    if { [ catch {$tabwin.tablature index lyr_selection} ] == 0 } {
+        recolor_tab_full -notwhitespace
+    }
+}
+
+# copy highlighted text
+proc text_copy {} {
+    global curr_namespace
+    global messages
+    global clip
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::text
+
+    if { [ catch {$tabwin.tablature index lyr_selection} ] != 0 } {
+        return
+    }
+    if { [ $tabwin.tablature compare insert < lyr_selection ] } {
+        array set mark_low [ find_textpos insert ]
+        array set mark_hi [ find_textpos lyr_selection ]
+    } else {
+        array set mark_low [ find_textpos lyr_selection ]
+        array set mark_hi [ find_textpos insert ]
+    }
+    regsub -all "\x07" [ string range $text($mark_low(section)) $mark_low(lyrics_pos) [ expr $mark_hi(lyrics_pos) - 1 ] ] "\n" clip
+    update_clipboard
+    $tabwin.tablature mark unset lyr_selection
+    recolor_tab_full -notwhitespace
+    ghost_cutcopy disabled
+}
+
+# cut highlighted text
+proc text_cut {args} {
+    global curr_namespace
+    global messages
+    global clip
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::text
+
+    if { [ catch {$tabwin.tablature index lyr_selection} ] != 0 } {
+        return
+    }
+    getopt opts {history} $args
+    if { [ $tabwin.tablature compare insert < lyr_selection ] } {
+        array set mark_low [ find_textpos insert ]
+        array set mark_hi [ find_textpos lyr_selection ]
+        set insert [ $tabwin.tablature index insert ]
+    } else {
+        array set mark_low [ find_textpos lyr_selection ]
+        array set mark_hi [ find_textpos insert ]
+        set insert [ $tabwin.tablature index lyr_selection ]
+    }
+    if { $opts(history) > 0 } {
+        history_add $messages(history:text_cut)
+        regsub -all "\x07" [ string range $text($mark_low(section)) $mark_low(lyrics_pos) [ expr $mark_hi(lyrics_pos) - 1 ] ] "\n" clip
+        update_clipboard
+    }
+    set before [ string range $text($mark_low(section)) 0 [ expr $mark_low(lyrics_pos) - 1 ] ]
+    set after [ string range $text($mark_low(section)) $mark_hi(lyrics_pos) end ]
+    set text($mark_low(section)) "${before}$after"
+    text_redisplay_section $mark_low(section)
+    $tabwin.tablature mark unset lyr_selection
+    $tabwin.tablature mark set insert $insert
+    $tabwin.tablature see insert
+    ghost_cutcopy disabled
+}
+
+# cut highlighted text without adding it to the paste buffer
+proc text_clear {} {
+    global messages
+
+    history_add $messages(history:text_clear)
+    text_cut
+}
+
+#paste text in lyrics mode
+proc text_paste {} {
+    global curr_namespace
+    global messages
+    global my_platform
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::text
+
+    # grab paste text from the system clipboard... should catch anything
+    # we placed in it, or any other program did
+    set paste_raw ""
+    if { $my_platform(platform) == "unix" } {
+        set paste_raw [ selection get -selection PRIMARY ]
+    } else {
+        set paste_raw [ selection get -selection CLIPBOARD]
+    }
+    set paste_processed ""
+    # look through paste buffer and eliminate non-printables, convert endlines
+    foreach character [split $paste_raw {}] {
+        scan $character %c asciival
+        if { $character == "\n" } {
+            append paste_processed "\x07"
+        } elseif { $asciival > 31 } {
+            append paste_processed $character
+        }
+    }
+    if { $paste_processed == "" } {
+        return
+    }
+        
+    history_add $messages(history:text_paste)
+    if { [ catch {$tabwin.tablature index lyr_selection} ] == 0 } {
+        text_cut
+    }
+    array set charinfo [ find_textpos insert ]
+    set insert [ $tabwin.tablature index insert ]
+
+    set before [ string range $text($charinfo(section)) 0 [ expr $charinfo(lyrics_pos) - 1 ] ]
+    set after [ string range $text($charinfo(section)) $charinfo(lyrics_pos) end ]
+    set text($charinfo(section)) "${before}${paste_processed}$after"
+    text_redisplay_section $charinfo(section)
+    $tabwin.tablature mark set insert "$insert + [string length $paste_processed] chars"
+    $tabwin.tablature see insert
+}
+
+# delete a character to the right of the cursor
+proc text_delete {} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::text
+
+    if { [ catch {$tabwin.tablature index lyr_selection} ] == 0 } {
+        text_clear
+    } elseif { [ $tabwin.tablature get insert ] == "\xA7" } {
+        # don't go past boundary of textbox
+        return
+    }
+    history_add $messages(history:text_del)
+    set insert [ $tabwin.tablature index insert ]
+    array set charinfo [ find_textpos insert ]
+    set before [ string range $text($charinfo(section)) 0 [ expr $charinfo(lyrics_pos) - 1 ] ]
+    set after [ string range $text($charinfo(section)) [ expr $charinfo(lyrics_pos) + 1 ] end ]
+    set text($charinfo(section)) "${before}$after"
+    text_redisplay_section $charinfo(section)
+    $tabwin.tablature mark set insert $insert
+    $tabwin.tablature see insert
+}
+
+# delete a character to the left of the cursor
+proc text_backspace {} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::text
+
+    array set charinfo [ find_textpos insert ]
+    if { [ catch {$tabwin.tablature index lyr_selection} ] == 0 } {
+        text_clear
+        return
+    } elseif { $charinfo(lyrics_pos) <= 0 } {
+        # don't go past boundary of textbox
+        return
+    }
+    history_add $messages(history:text_del)
+    set newcursor [ $tabwin.tablature index "insert - 1 chars" ]
+    set before [ string range $text($charinfo(section)) 0 [ expr $charinfo(lyrics_pos) - 2 ] ]
+    set after [ string range $text($charinfo(section)) $charinfo(lyrics_pos) end ]
+    set text($charinfo(section)) "${before}$after"
+    text_redisplay_section $charinfo(section)
+    $tabwin.tablature mark set insert $newcursor
+    $tabwin.tablature see insert
+}
+
+# move up one section of lyrics
+proc text_upsection {} {
+    global curr_namespace
+    variable ${curr_namespace}::tabwin
+
+    if { [ catch {$tabwin.tablature index lyr_selection} ] == 0 } {
+        array set charinfo [ find_textpos insert ]
+        $tabwin.tablature mark set insert $charinfo(textstart)
+        recolor_tab_full -notwhitespace
+    } else {
+        set new_section [ findmark previous [ findmark previous "insert + 1 chars" ] ]
+        if { $new_section != "" } {
+            array set charinfo [ find_textpos $new_section ]
+            $tabwin.tablature mark set insert $charinfo(textend)
+            recolor_tab_full -notwhitespace
+        }
+    }
+    $tabwin.tablature see insert
+}
+
+# move down one section of lyrics
+proc text_dnsection {} {
+    global curr_namespace
+    variable ${curr_namespace}::tabwin
+
+    if { [ catch {$tabwin.tablature index lyr_selection} ] == 0 } {
+        array set charinfo [ find_textpos insert ]
+        $tabwin.tablature mark set insert $charinfo(textend)
+        recolor_tab_full -notwhitespace
+    } else {
+        set new_section [ findmark next "insert + 1 chars" ]
+        if { $new_section != "delend" } {
+            array set charinfo [ find_textpos $new_section ]
+            $tabwin.tablature mark set insert $charinfo(textstart)
+            recolor_tab_full -notwhitespace
+        }
+    }
+    $tabwin.tablature see insert
+}
+
+# move to beginning of lyrics
+proc text_home {} {
+    global curr_namespace
+    variable ${curr_namespace}::tabwin
+
+    if { [ catch {$tabwin.tablature index lyr_selection} ] == 0 } {
+        array set charinfo [ find_textpos insert ]
+        $tabwin.tablature mark set insert $charinfo(textstart)
+        recolor_tab_full -notwhitespace
+    } else {
+        $tabwin.tablature mark set insert 1.0
+        recolor_tab_full -notwhitespace
+    }
+    $tabwin.tablature see insert
+}
+
+# move to end of lyrics
+proc text_end {} {
+    global curr_namespace
+    variable ${curr_namespace}::tabwin
+
+    if { [ catch {$tabwin.tablature index lyr_selection} ] == 0 } {
+        array set charinfo [ find_textpos insert ]
+        $tabwin.tablature mark set insert $charinfo(textend)
+        recolor_tab_full -notwhitespace
+    } else {
+        $tabwin.tablature mark set insert "delend - 2 chars"
+        recolor_tab_full -notwhitespace
+    }
+    $tabwin.tablature see insert
+}
+
+# set lyrics mode insertion cursor to location of mouse
+proc absolute_textpos {x y} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::insert_mode
+    variable ${curr_namespace}::mode_old
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::col_max
+    variable ${curr_namespace}::data_end
+    variable ${curr_namespace}::num_strings
+
+    # unhighlight selected text
+    if { [ catch { $tabwin.tablature index lyr_selection } ] == 0 } {
+        $tabwin.tablature mark unset lyr_selection
+        ghost_cutcopy disabled
+        recolor_tab_full -notwhitespace
+    }
+
+    set gapindex [ tkTextClosestGap $tabwin.tablature $x $y ]
+    array set charinfo [ find_textpos $gapindex ]
+    if { ( [ $tabwin.tablature compare $gapindex >= $charinfo(textstart) ] ) && ( [ $tabwin.tablature compare $gapindex <= $charinfo(textend) ] ) } {
+        # in a textbox
+        $tabwin.tablature mark set insert $gapindex
+        $tabwin.tablature see insert
+        recolor_tab_full -notwhitespace
+    } elseif { [ $tabwin.tablature get @$x,$y ] == "\xA7" } {
+        # clicked on the end-of-textbox symbol
+        $tabwin.tablature mark set insert "$gapindex - 1 chars"
+        $tabwin.tablature see insert
+        recolor_tab_full -notwhitespace
+    } else {
+        # check for click in a tab score
+        array set new [ tabpos_from_xy $x $y ]
+        if { ($new(col)<$col_max)&&($new(col)>=0)&&($new(string)>=0)&&($new(pos)>=0)&&($new(pos)<=$data_end)&&($new(string)<$num_strings) } {
+            #set insert_mode $messages(string:lead)
+            set insert_mode $mode_old
+            lyrics_done $x $y
+        }
+    }
+}
+
+# update selected area according to mouse drag
+proc text_select {x y} {
+    global curr_namespace
+    variable ${curr_namespace}::tabwin
+
+    if { [ catch { $tabwin.tablature index lyr_selection } ] != 0 } {
+        $tabwin.tablature mark set lyr_selection insert
+        ghost_cutcopy normal
+    }
+    array set insertinfo [ find_textpos lyr_selection ]
+    set index [ tkTextClosestGap $tabwin.tablature $x $y ]
+    # don't allow cursor to go beyond bounds of a textbox
+    if { [ $tabwin.tablature compare $index > $insertinfo(textend) ] } {
+        $tabwin.tablature mark set insert $insertinfo(textend)
+        tkCancelRepeat
+    } elseif { [ $tabwin.tablature compare $index < $insertinfo(textstart) ] } {
+        $tabwin.tablature mark set insert $insertinfo(textstart)
+        tkCancelRepeat
+    } else {
+        $tabwin.tablature mark set insert $index
+    }
+    $tabwin.tablature see insert
+    recolor_tab_full -notwhitespace
+}
+
+#insert text in lyrics mode
+proc text_insert {character} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::text
+
+    # ignore non-printables... like ^C
+    if { $character == "\n" } {
+        set character "\x07"
+    } elseif {$character == ""} {
+        return
+    } else {
+        scan $character %c asciival
+        if { $asciival < 32 } {
+            return
+        }
+    }
+       
+    history_add $messages(history:text_insert)
+    if { [ catch {$tabwin.tablature index lyr_selection} ] == 0 } {
+        text_cut
+    }
+    array set charinfo [ find_textpos insert ]
+
+    set before [ string range $text($charinfo(section)) 0 [ expr $charinfo(lyrics_pos) - 1 ] ]
+    set after [ string range $text($charinfo(section)) $charinfo(lyrics_pos) end ]
+    set text($charinfo(section)) "${before}${character}$after"
+    set insert [ $tabwin.tablature index insert ]
+    #redraw_full
+    text_redisplay_section $charinfo(section)
+    $tabwin.tablature mark set insert "$insert + 1 chars"
+    $tabwin.tablature see insert
+}
+
+# return ascii tab notation that corresponds to fret number given on input
+proc fretnum_to_asciitab {fret_todraw} {
+    global tab_symbols
+    global embellish
+
+    if { [ info exists tab_symbols($fret_todraw) ] } {
+        return $tab_symbols($fret_todraw)
+    } elseif { $fret_todraw < 0 } {
+        return "---"
+    } elseif { $fret_todraw < 2000} {
+        # modifier is 100's digit
+        set modnum [ expr int ( $fret_todraw / 100 ) ]
+        # fret is 1's and 10's
+        set fretnum [ expr $fret_todraw % 100 ]
+        # if fret < 10, add in a '-' to fill the 'empty' spot
+        set filler [ lindex { - {} } [ expr $fretnum > 9 ] ]
+        return "$embellish($modnum)${fretnum}$filler"
+    } elseif { $fret_todraw < 2100} {
+        return "-x-"
+    } else {
+        return "---"
+    }
+}
+
+
+#export tablature
+proc export_tab {} {
+    global curr_namespace
+    global version
+    global export_types
+    global my_platform
+    global cwd
+    global messages
+    variable ${curr_namespace}::name
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::winnum
+    
+    # what do we do if we don't yet have a filename?
+    if { $name == "" } {
+        set basename $messages(string:untitled)$winnum
+    } else {
+        set basename [ file rootname [ lindex [ file split $name ] end ] ]
+    }
+
+    # pull up the file dialog window
+    if {$my_platform(os)=="MacOS"} {
+        set filename [my_filedialog tk_getSaveFile \
+            -title $messages(string:export) -parent $tabwin \
+            -initialfile $basename -initialdir $cwd -defaultextension .tab ]
+    } else {
+        set filename [my_filedialog tk_getSaveFile -filetypes $export_types \
+            -title $messages(string:export) -parent $tabwin \
+            -initialfile $basename -initialdir $cwd -defaultextension .tab ]
+    }
+
+    # did user close file dialog without choosing a file?
+    if { $filename == "" } {
+        return
+    }
+
+    # hack around exten. not auto-appended in OSX tcl/tk 8.4a4-2
+    if { ($my_platform(os)=="Darwin") && ([file extension $filename] != ".tab" ) } {
+        append filename .tab
+    }
+    set cwd [ file dirname $filename ]
+    # on failed file operation, does user want to retry?
+    set success 0
+    while { $success == 0 } {
+        catch { set myfile [open "$filename" w] }
+        if { [info exists myfile] } {
+            set success 1
+        } elseif { [my_dialog  $messages(title:save_fail)  [subst -nocommands -nobackslashes $messages(dialog:save_fail)] error "" $messages(button:retry) $messages(button:cancel) ] == "1" } {
+                return
+        }
+    }
+
+    # dump data into the file, dropping section symbols
+    # according to fconfigure manpage, end-of-line chars will be translated
+    # appropriately for each OS
+    set insert [ $tabwin.tablature index insert ]
+    redisplay_toend -nosymbols start
+    puts -nonewline $myfile [$tabwin.tablature get 1.0 end]
+    redisplay_toend start
+    $tabwin.tablature mark set insert $insert
+    recolor_tab_full -notwhitespace
+    close $myfile
+    if { $my_platform(os) == "MacOS" } {
+            file attributes $filename -creator ttxt -type TEXT
+    }
+}
+
+#save tablature
+proc save_tab {args} {
+    global curr_namespace
+    global version
+    global save_types
+    global ext
+    global macext
+    global my_platform
+    global cwd
+    global messages
+    variable ${curr_namespace}::name
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::saved
+    variable ${curr_namespace}::tab_data
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::winnum
+    variable ${curr_namespace}::tuning
+    variable ${curr_namespace}::row_sep_lines
+    variable ${curr_namespace}::score_width
+    variable ${curr_namespace}::text
+    
+    getopt opts {as} $args
+    # nothing to do if file is already saved, and user isn't doing save_as
+    if { ($saved == 1)&&($opts(as) < 1) } {
+        return
+    }
+    # what do we do if we don't yet have a filename?
+    if { $name == "" } {
+        set basename $messages(string:untitled)$winnum
+        set opts(as) 1
+    } else {
+        set basename [ file rootname [ lindex [ file split $name ] end ] ]
+    }
+
+    # pull up the file dialog window
+    if {$opts(as) > 0} {
+        if {$my_platform(os)=="MacOS"} {
+            set filename [my_filedialog tk_getSaveFile -parent $tabwin \
+                -title $messages(string:save) -initialfile $basename \
+                -defaultextension $ext($num_strings) -initialdir $cwd ]
+        } else {
+            set filename [my_filedialog tk_getSaveFile -parent $tabwin \
+                -title $messages(string:save) -initialfile $basename \
+                -defaultextension $ext($num_strings) -initialdir $cwd \
+                -filetypes $save_types($num_strings) ]
+        }
+
+        # did user close file dialog without choosing a file?
+        if { $filename == "" } {
+            return
+        }
+        # hack around exten. not auto-appended in OSX tcl/tk 8.4a4-2
+        if { ($my_platform(os)=="Darwin") && ([file extension $filename] != $ext($num_strings) ) } {
+            append filename $ext($num_strings)
+        }
+        set cwd [ file dirname $filename ]
+        set name $filename
+    }
+
+    # on failed file operation, does user want to retry?
+    set success 0
+    while { $success == 0 } {
+        catch { set myfile [open "$name" w] }
+        if { [info exists myfile] } {
+            set success 1
+        } elseif { [my_dialog  $messages(title:save_fail)  [subst -nobackslashes -nocommands $messages(dialog:save_fail)] error "" $messages(button:retry) $messages(button:cancel) ] == "1" } {
+                return
+        }
+    }
+
+    # dump data into the file
+    puts $myfile "#eTktab$version tablature file"
+    puts $myfile "#*formatting: score_width $score_width row_sep_lines $row_sep_lines"
+    puts $myfile "#*lyrics: [array get text]"
+    for { set i 0 } { $i < $num_strings } { incr i } {
+        puts $myfile $tuning($i)
+        # windows wants us to flush when we write in multiple statements
+        flush $myfile
+    }
+    puts -nonewline $myfile $tab_data 
+    close $myfile
+    if { $my_platform(os) == "MacOS" } {
+            file attributes $name -creator eTkt -type $macext($num_strings)
+    }
+
+    # update window 
+    wm title $tabwin "eTktab$version - $name" 
+    refresh_winmenu
+    set_saved 1
+}
+
+#load tablature 
+proc open_tab {} {
+    global curr_namespace
+    global my_platform
+    global version
+    global chromatic
+    global messages
+    global default_prefs
+    variable ${curr_namespace}::data_end
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::name
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::saved
+    variable ${curr_namespace}::tab_data
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::tuning
+    variable ${curr_namespace}::row_sep_lines
+    variable ${curr_namespace}::score_width
+    variable ${curr_namespace}::text
+    
+    array set new_tuning [ array get tuning ]
+    set filename $name
+
+    # on failed file operation, does user want to retry?
+    set success 0
+    while { $success == 0 } {
+        catch { set myfile [open "$name" r] }
+        if { [info exists myfile] } {
+            set success 1
+        } elseif { [my_dialog  $messages(title:open_fail)  [subst -nocommands -nobackslashes $messages(dialog:open_fail) ] error "" $messages(button:retry) $messages(button:cancel) ] == "1" } {
+                return
+        }
+    }
+
+    # as of version 2.0, there's a line at the top to identify it's a
+    # eTktab file
+    # according to fconfigure tcl manpage, we don't have to worry about
+    # which OS the file was made on (what end-of-line char is used)
+    # as tcl will translate automatically for us!
+    set i 0
+    while { [ info exists tab_data_new ] == 0 } {
+        gets $myfile next_line
+        if { [ string range "$next_line" 0 12 ] == "#*formatting:" } {
+            #formatting
+            regexp {^#\*formatting: *score_width *([0-9]+) *row_sep_lines *([0-9]+)} $next_line full score_width_new row_sep_lines_new
+        } elseif { [ string range "$next_line" 0 8 ] == "#*lyrics:"} {
+            # lyrics
+            array set text_new [string range $next_line 10 end]
+        } elseif { [lsearch -exact $chromatic $next_line] > -1 } {
+            # tuning
+            set new_tuning($i) $next_line
+            incr i
+        } elseif { [ string index "$next_line" 0 ] != "#" } {
+            # tab, not 'comments'
+            set num_strings_new $i
+            set tab_data_new $next_line
+        }
+    }
+    close $myfile
+
+    # tab looks valid?
+    if { ( [ llength [ lindex $tab_data_new 0 ] ] != $num_strings_new ) || (($num_strings_new < 4)||($num_strings_new > 7)) } {
+        my_dialog  $messages(title:file_bad) [subst -nocommands -nobackslashes $messages(dialog:file_bad) ] error 0 $messages(button:ok)
+        return
+    } 
+
+    set num_strings $num_strings_new
+    if { [info exists row_sep_lines_new] } {
+        set row_sep_lines $row_sep_lines_new
+    } else {
+        set row_sep_lines $default_prefs(row_sep_lines)
+    }
+    if { [info exists score_width_new] } {
+        set score_width $score_width_new
+    } else {
+        set score_width $default_prefs(score_width)
+    }
+    if { [info exists text_new ] } {
+        array set text [ array get text_new ]
+    } else {
+        array set text ""
+    }
+    initialize_numstrings $curr_namespace
+
+    array set tuning [ array get new_tuning ]
+    set tab_data $tab_data_new
+    set data_end [ expr [llength $tab_data] -1 ]
+    set pos $data_end
+    set mark -1
+    redraw_full
+    wm title $tabwin "eTktab$version - $name"
+    refresh_winmenu
+
+    set_saved 1
+    history_clear
+
+    lyrics_done
+    # change keyboard and mouse bindings
+    bindtags $tabwin [ lreplace [bindtags $tabwin ] 1 1 Tabwindow$num_strings ]
+    bindtags $tabwin.tablature [ lreplace [bindtags $tabwin.tablature ] 1 2 Tablature Tabwindow$num_strings ]
+}
+
+# close window... if unsaved, ask user what to do
+proc close_tab {} { 
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::name
+    variable ${curr_namespace}::saved
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::winnum
+
+    if { $saved == 0 } {
+        if { $name == "" } {
+            set filename $messages(string:untitled)$winnum
+        } else {
+            set filename $name
+        }
+
+        set response [my_dialog  $messages(title:close_verify) [subst -nocommands -nobackslashes $messages(dialog:close_verify)] warning "" $messages(button:yes) $messages(button:no) $messages(button:cancel) ]
+        if {$response == 0} {
+            save_tab
+        } elseif {($response != 1)} {
+            return
+        }
+    } 
+    # closing the last window means quitting the program
+    if { [ llength [ namespace children ::WIN ] ] == 1 } {
+        __exit_now
+    } else {
+        destroy $tabwin
+        namespace delete $curr_namespace
+        refresh_winmenu
+    }
+}
+
+#print tablature
+proc print_tab {} {
+    global curr_namespace
+    global my_platform
+    global cwd
+    global program_dir
+    global tempdir
+    global messages
+    global print_counter
+    global prefs
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::row_sep_lines
+    
+    incr print_counter
+    set name [lrange [wm title $tabwin] 2 end] 
+    if { $my_platform(platform) == "unix" } {
+        if { [ print_dialog $print_counter ] != 1 } {
+            return
+        }
+        set filename "| $prefs(print_command)"
+    } elseif { $my_platform(platform) == "macintosh" } {
+        if { [ file executable /usr/bin/lpstat ] != 1 } {
+            set w .printerr_$print_counter
+            if { [ basic_transient -nocancel $w $messages(title:print_return) ] != -1 } {
+                label ${w}.text -text $messages(dialog:print_unsupported)
+                pack ${w}.text -side top -fill x
+                wm transient $w $tabwin
+            }
+            return
+        }
+        if { [ print_dialog $print_counter ] != 1 } {
+            return
+        }
+        set filename "| /usr/bin/lpr -P $prefs(print_command)"
+    } else {
+        set filename [ file join $tempdir eTktab_[pid]_${print_counter}.txt ]
+    }
+
+    # on failed file operation, does user want to retry?
+    set success 0
+    while { $success == 0 } {
+        catch { set myfile [open "$filename" w] }
+        if { [info exists myfile] } {
+            set success 1
+        } elseif { [my_dialog  $messages(title:save_fail)  [subst -nocommands -nobackslashes $messages(dialog:save_fail)] error "" $messages(button:retry) $messages(button:cancel) ] == "1" } {
+                return
+        }
+    }
+
+    # change cursor to let user know we're processing
+    set cursor [ $tabwin.tablature cget -cursor ]
+    $tabwin.tablature configure -cursor watch
+    update idletasks
+
+    #redraw the screen contents w/o section symbols
+    set insert [ $tabwin.tablature index insert ]
+    redisplay_toend -nosymbols start
+
+    #break each page at the start of a score, making sure that it's less than
+    #the page length
+    set pagenum 1
+    set pagestart header
+    set blank_lines $row_sep_lines
+    set pagebreak ""
+    set pageend ""
+    while { $pagestart != "delend" } {
+        set tryend $pagestart
+        # start-end... don't print blank lines at page bottom, add 2 line header
+        while { ([ expr int([$tabwin.tablature index $tryend] - [$tabwin.tablature index $pagestart]) - $blank_lines + 2 ] <= $prefs(page_length)) } {
+            set pageend $tryend
+            if { $pageend == "delend" } {
+                break
+            }
+            set tryend [ findmark next $tryend ]
+            if { $tryend == "delend" } {
+                set blank_lines 0
+            }
+        }
+        #add a header (title + page number) followed by a blank line
+        puts $myfile "${pagebreak}$pagenum  $name\n"
+        # cut row_sep off from end of pages in middle of tab
+        if { $pageend == $pagestart } {
+            set pageend "$pagestart + $prefs(page_length) lines"
+            puts -nonewline $myfile [ $tabwin.tablature get $pagestart $pageend ]
+        } elseif { $pageend != "delend"} {
+            puts -nonewline $myfile [ $tabwin.tablature get $pagestart "$pageend - $row_sep_lines lines" ]
+        } else {
+            puts -nonewline $myfile [ $tabwin.tablature get $pagestart $pageend ]
+        }
+        incr pagenum
+        set pagestart $pageend
+        set pagebreak "\x0c"
+    }
+    # according to fconfigure manpage, end-of-line chars will be translated
+    # appropriately for each OS
+
+    catch {close $myfile} return_val
+
+    #  Run windows print commands against tempfile
+    switch -- $my_platform(platform) {
+        {windows} {
+            exec [file join $program_dir prfile32.exe] /q /i:[file join $program_dir prfile.ini ] /delete $filename
+            # change cursor back to normal
+            $tabwin.tablature configure -cursor $cursor
+        }
+        {default} {
+            # change cursor back to normal
+            $tabwin.tablature configure -cursor $cursor
+            # present any errors from print helper
+            if { $return_val != "" } {
+                set w .printerr_$print_counter
+                if { [ basic_transient -nocancel $w $messages(title:print_return) ] != -1 } {
+                    label ${w}.text -text $return_val
+                    pack ${w}.text -side top -fill x
+                    wm transient $w $tabwin
+                }
+            }
+        }
+    }
+    # restore window contents
+    redisplay_toend start
+    $tabwin.tablature mark set insert $insert
+    recolor_tab_full -notwhitespace
+}
+
+#
+# Pull up transient windows for user input
+#
+
+#set which file to look to for natural language support strings
+proc pref_language {} {
+    global curr_namespace
+    global prefs
+    global messages
+    global program_dir
+    global curr_namespace
+    global language_types
+    global settings_file_failures
+    variable ${curr_namespace}::tabwin
+
+    # call up file dialog to find natural language file
+    set filename [my_filedialog tk_getOpenFile -parent $tabwin \
+        -title $messages(string:language)  -filetypes $language_types \
+        -initialdir $program_dir -defaultextension .etl ]
+    # did the user give a filename?
+    if { $filename == "" } {
+        return
+    }
+
+    # alter prefs and load in file
+    set prefs(language) $filename
+    load_language_support
+
+    # did load fail?
+    if { $settings_file_failures != "" } {
+        my_dialog $messages(title:open_fail)  [subst -nocommands -nobackslashes $messages(dialog:open_fail) ] error 0 $messages(button:ok)
+        set settings_file_failures ""
+        return
+    }
+
+    #save all user prefs
+    save_prefs
+
+    # load lang. support strings into each open tab window
+    each_namespace label_gui
+    # kill and reopen help window
+    if { [ winfo exists .helpwin ] } {
+        destroy .helpwin
+        help
+    }
+}
+
+#set which file to look to for keybindings
+proc pref_keybindings {} {
+    global curr_namespace
+    global prefs
+    global messages
+    global program_dir
+    global curr_namespace
+    global keybind_types
+    global settings_file_failures
+    variable ${curr_namespace}::tabwin
+
+    # call up file dialog to find keybindings file
+    set filename [my_filedialog tk_getOpenFile -filetypes $keybind_types \
+        -title $messages(string:keybind) -parent $tabwin \
+        -initialdir $program_dir -defaultextension .etk ]
+    # did the user give a filename?
+    if { $filename == "" } {
+        return
+    }
+
+    # alter prefs and load in file
+    set prefs(keybindings) $filename
+    load_keybindings
+
+    # did load fail?
+    if { $settings_file_failures != "" } {
+        my_dialog $messages(title:open_fail)  [subst -nocommands -nobackslashes $messages(dialog:open_fail) ] error 0 $messages(button:ok)
+        set settings_file_failures ""
+        return
+    }
+
+    #save all user prefs
+    save_prefs
+
+    # load bindings into each open tab window
+    keybind_global
+    # kill and reopen help window
+    if { [ winfo exists .helpwin ] } {
+        destroy .helpwin
+        help
+    }
+}
+
+#call up a window with the preferred command for printing
+proc print_dialog {print_counter} {
+    global curr_namespace
+    global prefs
+    global print_command
+    global print_button
+    global pagelen
+    global messages
+    global my_platform
+    variable ${curr_namespace}::tabwin
+
+    set w .printprefs_$print_counter
+    set pagelen $prefs(page_length)
+    set print_command $prefs(print_command)
+    if {$my_platform(platform) == "unix"} {
+        if { [ basic_transient -alt $w $messages(string:print) ] == -1 } {
+            return 0
+        }
+        label $w.command_label -text $messages(dialog:print_command)
+        entry $w.command_entry -textvariable print_command
+        pack $w.command_label 
+        pack $w.command_entry -fill x 
+        bind $w <FocusIn> "focus $w.command_entry"
+    } else {
+       # macintosh
+       if { [ basic_transient $w $messages(string:print) ] == -1 } {
+           return 0
+       }
+       set printer_list ""
+       foreach lpstat_line [split [exec /usr/bin/lpstat -a] "\n" ] {
+           lappend printer_list "radiobutton -label [ lindex $lpstat_line 0 ] -variable ::print_command"
+           lappend mac_printers [ lindex $lpstat_line 0 ]
+       }
+       if { $printer_list == ""} {
+           destroy $w
+           return 0
+       }
+       if { ($print_command=="") || ([lsearch -exact $mac_printers $print_command]== -1) } {
+           set print_command [ lrange [ exec /usr/bin/lpstat -d] end end ]
+       }
+       label $w.printer_label -text $messages(dialog:print_select)
+       my_menubutton $w.printer_list -textvariable ::print_command $printer_list
+       pack $w.printer_label
+       pack $w.printer_list
+    }
+    label $w.pagelength_label -text "\n$messages(dialog:page_length)"
+    scale $w.pagelength_scale -showvalue true -from 40 -to 120 -resolution 1 -orient horizontal -variable ::pagelen 
+    pack $w.pagelength_label 
+    pack $w.pagelength_scale -fill x
+    $w.buttons.cancel configure -command "
+        set print_button -1
+    "
+    $w.buttons.ok configure -default active -command "
+        set print_button 1
+    "
+    wm transient $w $tabwin
+    grab $w
+    bind $w <Return> "$w.buttons.ok invoke"
+
+    tkwait variable print_button
+    grab release $w
+    destroy $w
+    if {$print_button == -1 } {
+        unset print_button
+        return 0
+    } 
+    if {($print_command != $prefs(print_command)) || ( $pagelen != $prefs(page_length))} {
+        set prefs(print_command) $print_command
+        set prefs(page_length) $pagelen
+        save_prefs
+    }
+    unset print_button
+    return 1
+}
+
+#build a generic transient window to fill in with whatever
+proc basic_transient {args} {
+    global messages
+
+    getopt opts {alt nocancel} $args
+    if {$opts(nocancel) > 0} {
+        set close ok
+    } else {
+        set close cancel
+    }
+    set w [ lindex $opts(EXTRA) 0 ]
+    set title [ lindex $opts(EXTRA) 1 ]
+
+    if { [ winfo exists $w ] } {
+        raise $w
+        focus $w
+        return -1
+    }
+
+    toplevel $w
+    wm title $w $title
+    frame $w.buttons
+    pack $w.buttons -side bottom -pady 2m
+    button $w.buttons.ok -under 0 -text $messages(button:ok)
+    pack $w.buttons.ok -side left -expand true -padx 2.5m
+    if { $opts(alt) > 0 } {
+        button_bind -alt $w.buttons.ok
+    } else {
+        button_bind $w.buttons.ok
+    }
+
+    # do we have a both ok and cancel, or just ok?
+    if { $close == "cancel" } {
+        button $w.buttons.cancel -under 0 -text $messages(button:cancel) 
+        pack $w.buttons.cancel -side left -expand true -padx 2.5m
+        if { $opts(alt) > 0 } {
+           button_bind -alt $w.buttons.cancel
+        } else {
+           button_bind $w.buttons.cancel
+        }
+    } else {
+        $w.buttons.ok configure -default active
+        bind $w <Key-Return> "$w.buttons.ok invoke"
+    }
+    $w.buttons.$close configure -command "
+        grab release $w
+        destroy $w
+    "
+    wm protocol $w WM_DELETE_WINDOW "$w.buttons.$close invoke"
+}
+
+#set color preferences
+proc pref_colors {} {
+    global curr_namespace
+    global prefs
+    global messages
+    global temp_colors
+    global my_platform
+
+    if { [ basic_transient .color $messages(title:color) ] == -1 } {
+        return
+    }
+
+    text .color.test -font {Courier 18} -height 7 -width 14
+    pack .color.test -side right -fill y
+    frame .color.settings
+    pack .color.settings -side top -fill both -expand true
+    
+    .color.buttons.ok configure -command {
+        array set prefs [ array get temp_colors ]
+        #save all user prefs
+        save_prefs
+
+        # load colors into each open tab window
+        # we'll skip the help window on this one pref. proc.
+        each_namespace color_gui
+        destroy .color
+    }
+
+    set attribute_old ""
+    array set attrib_row {bg -1 fg -1}
+    array set attrib_col {bg 1 fg 0}
+    foreach setting [ lsort [ array names prefs {color*} ] ] {
+        #some macos versions don't like font redef. in menus
+        if {($my_platform(platform)=="macintosh")&&([string match {*menu*} $setting])} {
+            continue
+        }
+        set temp_colors($setting) $prefs($setting)
+        button .color.settings.$setting -font $prefs(font_statusbar) -text $messages(string:$setting) -command "
+            set tc \[my_chooseColor -parent .color -title {$messages(string:$setting)} -initialcolor \$temp_colors($setting)\] 
+            if {\$tc != \"\"} { 
+                set temp_colors($setting) \$tc 
+                trycolor 
+            }
+         "
+        regexp {color_[a-z]+_([bf]g)} $setting full attribute
+        if {($attribute != $attribute_old)&&($attribute == {bg})} {
+                set lastrow [calc_max $attrib_row(bg) $attrib_row(fg)]
+                array set attrib_row "fg $lastrow bg $lastrow"
+        }
+        incr attrib_row($attribute)
+        grid .color.settings.$setting -row $attrib_row($attribute) -column $attrib_col($attribute) -pady 2m -sticky we
+        set attribute_old $attribute
+    }
+    
+    trycolor
+    .color.test insert end "\n 0123ABCDabcd\n\n 0123ABCDabcd"
+    .color.test tag add color_help_bg 2.0 3.0
+    .color.test tag add color_help_fg 2.0 3.0
+    # don't show menu color opts on mac
+    if {$my_platform(platform)!="macintosh"} {
+        .color.test insert end "\n\n 0123ABCDabcd"
+        .color.test tag add color_menu_bg 4.0 5.0
+        .color.test tag add color_menu_fg_left 4.0 4.7
+        .color.test tag add color_menu_fg_right 4.7 5.0
+        set lastrow 6
+    } else {
+        set lastrow 4
+    }
+    .color.test tag add color_tab_bg_default ${lastrow}.0 ${lastrow}.7
+    .color.test tag add color_tab_bg_sel ${lastrow}.7 end
+    .color.test tag add color_tab_fg_currpos ${lastrow}.0 ${lastrow}.3 ${lastrow}.7 ${lastrow}.9
+    .color.test tag add color_tab_fg_currstring ${lastrow}.3 ${lastrow}.5 ${lastrow}.9 ${lastrow}.11
+    .color.test tag add color_tab_fg_default ${lastrow}.5 ${lastrow}.7 ${lastrow}.11 end
+
+    place_transient .color
+}
+
+#set font size/weight preferences... not family, because we want to force
+#the user to a non-proportional tablature font, and it also makes this easier
+proc pref_fonts {} {
+    global curr_namespace
+    global prefs
+    global messages
+    global font_sizes
+    global font_weights
+    global temp_font
+    global my_platform
+
+    if { [ basic_transient .font $messages(menu:font) ] == -1 } {
+        return
+    }
+
+    .font.buttons.ok configure -command {
+        array set prefs [ array get temp_font ]
+        #save all user prefs
+        save_prefs
+
+        # load fonts into each open tab window
+        each_namespace color_gui
+        destroy .font
+        # load fonts into any open help windows
+        if { [ winfo exists .helpwin ] } {
+            .helpwin.txt configure -font $prefs(font_help)
+            .helpwin.buttons.can configure -font $prefs(font_statusbar)
+        }
+    }
+
+    frame .font.pref
+    pack .font.pref -side top -fill x -pady 2m
+    set i -1
+    foreach setting [ lsort [ array names prefs {font*} ] ] {
+        #some macos versions don't like font redef. in menus
+        if {($my_platform(platform)=="macintosh")&&([string match {*status*} $setting])} {
+            continue
+        }
+        set prefix .font.pref.${setting}
+        incr i
+        set temp_font($setting) $prefs($setting)
+        # get size and weight of fonts currently in use
+        regexp {([0-9]+)} $prefs($setting) full size
+        switch -glob -- $prefs($setting) {
+            {*bold?italic*}
+                {set weight bold_italic}
+            {*bold*}
+                {set weight bold}
+            {*italic*}
+                {set weight italic}
+            default
+                {set weight regular}
+        }
+        
+        # Font name written in chosen font
+        label ${prefix}_name -justify left -text $messages(string:$setting) -font $prefs($setting)
+
+        # size choice menubutton
+        menubutton ${prefix}_size -text $size -menu ${prefix}_size.menu -width 2
+        menu ${prefix}_size.menu 
+        foreach size_choice $font_sizes {
+            ${prefix}_size.menu add radiobutton -indicatoron false -label $size_choice -command "
+                regsub {(\[0-9\]+)} \$temp_font($setting) $size_choice temp_font($setting)
+                ${prefix}_name configure -font \$temp_font($setting)
+                ${prefix}_size configure -text $size_choice 
+            "
+        }
+
+        # weight choice menubutton
+        menubutton ${prefix}_weight -text $messages(string:$weight) -menu ${prefix}_weight.menu
+        menu ${prefix}_weight.menu 
+        set mb_width 0
+        foreach weight_choice [ lsort [ array names font_weights ] ] {
+            ${prefix}_weight.menu add radiobutton -indicatoron false -label $messages(string:$weight_choice) -command "
+                set temp_font($setting) \"\[lrange \$temp_font($setting) 0 1 \] \$font_weights($weight_choice)\"
+                ${prefix}_name configure -font \$temp_font($setting)
+                ${prefix}_weight configure -text $messages(string:$weight_choice)
+            "
+            if { [ string length $messages(string:$weight_choice) ] > $mb_width } {
+                set mb_width [ string length $messages(string:$weight_choice) ]
+            }
+        }
+        ${prefix}_weight configure -width $mb_width
+        grid ${prefix}_name ${prefix}_size ${prefix}_weight -row $i -sticky we -pady 2m
+    }
+
+    place_transient .font
+}
+      
+# set formatting of tablature
+proc pref_format {variable} {
+    global curr_namespace
+    global messages
+    global my_platform
+    global col_width
+
+    if {$variable == "current"} {
+        set space $curr_namespace
+        variable ${space}::temp_format
+        variable ${space}::score_width
+        variable ${space}::row_sep_lines
+        variable ${space}::tabwin
+        array set temp_format [list row_sep_lines $row_sep_lines score_width $score_width]
+        set window $tabwin.format
+        set title $messages(menu:format)
+    } else {
+        set space "::defaults"
+        global prefs
+        variable ${space}::temp_format
+        array set temp_format [list row_sep_lines $prefs(row_sep_lines) score_width $prefs(score_width) window_width $prefs(window_width) window_height $prefs(window_height)]
+        set window .format_defaults
+        set title $messages(menu:default_format)
+    }
+
+    if { [ basic_transient $window $title ] == -1 } {
+        return
+    }
+
+    if {$variable == "current"} {
+        $window.buttons.ok configure -command "
+            set ${space}::score_width \$${space}::temp_format(score_width)
+            set ${space}::row_sep_lines \$${space}::temp_format(row_sep_lines)
+           
+            # load formatting into current tab window
+            process_formatting $space
+            redisplay_toend start
+
+            destroy $window
+        "
+    } else {
+        $window.buttons.ok configure -command "
+            array set prefs \[array get ${space}::temp_format \]
+            save_prefs
+            destroy $window
+        "
+    }
+
+    frame $window.pref
+    pack $window.pref -side top -fill x -pady 2m
+
+    label $window.pref.rowsep_label -text $messages(string:separation)
+    scale $window.pref.rowsep_scale -showvalue true -from 1 -to 10 -resolution 1 -orient vertical -variable ${space}::temp_format(row_sep_lines)
+    grid $window.pref.rowsep_label -row 0 -column 0 -columnspan 2 -sticky e
+    grid $window.pref.rowsep_scale -row 0 -column 2 -rowspan 2 -sticky w
+    scale $window.pref.width_scale -showvalue true -from 45 -to 135 -resolution $col_width -label $messages(string:width) -orient horizontal -variable ${space}::temp_format(score_width)
+    grid $window.pref.width_scale -row 1 -column 0 -columnspan 2 -sticky we -pady 2m
+    if {$variable != "current"} {
+        label $window.pref.spacer -text "   "
+        label $window.pref.winheight_label -text $messages(string:window_height)
+        scale $window.pref.winheight_scale -showvalue true -from 20 -to 80 -resolution 1 -orient vertical -variable ${space}::temp_format(window_height)
+        grid $window.pref.spacer -row 1 -column 3
+        grid $window.pref.winheight_label -row 0 -column 4 -columnspan 2 -sticky e
+        grid $window.pref.winheight_scale -row 0 -column 6 -rowspan 2 -sticky w
+        scale $window.pref.winwidth_scale -showvalue true -from 50 -to 140 -label $messages(string:window_width) -orient horizontal -variable ${space}::temp_format(window_width)
+        grid $window.pref.winwidth_scale -row 1 -column 4 -columnspan 2 -sticky we -pady 2m
+    }
+
+    place_transient $window
+}
+      
+# allow user to add/del/edit from a list of known 'preset' tunings
+proc tuning_presets {ns} {
+    global prefs
+    global messages
+    variable ::defaults::tunings_$ns
+    variable ::defaults::tun_names_$ns
+
+    # access current prefs.
+    array set tunings_$ns $prefs(tun_presets_$ns)
+    set tun_names_$ns [ lsort [ array names tunings_$ns ] ]
+
+    # draw the window
+    set window .preflist_$ns
+    if { [ basic_transient $window "$messages(string:tuning_presets) $ns" ] == -1 } {
+        return
+    }
+    $window.buttons.ok configure -command "
+        set prefs(tun_presets_$ns) \[ array get ::defaults::tunings_$ns \]
+        save_prefs
+        destroy $window
+    "
+    frame $window.body
+    pack $window.body -expand 1 -fill both -side top
+
+    scrollbar $window.body.scroll -command "$window.body.list yview"
+    listbox $window.body.list -yscroll "$window.body.scroll set" -width 30 -height 16 -setgrid 1 -listvar ::defaults::tun_names_$ns
+    frame $window.body.actions
+    pack $window.body.list $window.body.scroll -side left -fill y -expand 1
+    pack $window.body.actions -side bottom
+
+    button $window.body.actions.edit -text $messages(button:edit) -command "tuning_win presets $ns \[selection get\]"
+    button $window.body.actions.add -text $messages(button:add) -command "tuning_win presets $ns {}"
+    button $window.body.actions.del -text $messages(button:delete) -command "
+        array unset ::defaults::tunings_$ns \"\[selection get\]\"
+        set ::defaults::tun_names_$ns \[ array names ::defaults::tunings_$ns \]
+    "
+        
+    pack $window.body.actions.add $window.body.actions.edit $window.body.actions.del -fill x -expand 1
+
+    # double-clicking an entry is the same as pushing the 'edit' button
+    bind $window.body.list <Double-1> "$window.body.actions.edit invoke"
+}
+
+# pulldown menus to change tuning of individual strings
+proc tuning_win {args} {
+    global chromatic
+    global curr_namespace
+    global messages
+    global prefs
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::text
+
+    # alter behavior, based on whether we're editing the tuning of a
+    # tab window, the default for some # of strings, or a named preset
+    switch  -glob -- $args {
+        {current} {
+            set space $curr_namespace
+            variable ${space}::num_strings
+            variable ${space}::tuning
+            variable ${space}::temp_tuning
+            set ns $num_strings
+            array set temp_tuning [ array get tuning ]
+            set window $tabwin.tuning
+            set title $messages(title:tuning)
+            if { [ basic_transient $window $title ] == -1 } {
+                return
+            }
+        }
+        {newtab*} {
+            set ns [ lindex $args 1 ]
+            set space ::defaults
+            variable ${space}::temp_tuning
+            array set temp_tuning $prefs(tuning_$ns)
+            set window .tuning_defaults
+            set title $messages(menu:default_tuning)
+            if { [ basic_transient $window $title ] == -1 } {
+                return
+            }
+        }
+        {presets*} {
+            set space ::defaults
+            variable ${space}::temp_tuning
+            variable ${space}::tun_name
+            set ns [ lindex $args 1 ]
+            set tun_name [ lindex $args 2 ]
+            # if the preset has a name, we're editing an existing preset,
+            # if the name is empty, we're adding a new one
+            if {$tun_name == ""} {
+                array set temp_tuning $prefs(tuning_$ns)
+                set title $messages(string:tuning_presets)
+            } else {
+                set ::defaults::oldname "$tun_name"
+                set title "$tun_name"
+                array set temp_tuning [ lindex [ array get ::defaults::tunings_$ns "$tun_name" ] 1 ]
+            }
+            set window .tuning_edit_presets
+            if { [ basic_transient -alt "$window" "$title" ] == -1 } {
+                return
+            }
+        }
+    }
+    # build a list of items to put in a menu of named tunings
+    array set presets $prefs(tun_presets_$ns)
+    foreach p [ lsort [ array names presets ] ] {
+        lappend preset_menu "command -label {$p} {array set ${space}::temp_tuning {$presets($p)}}"
+    }
+
+    frame $window.body
+    pack $window.body -expand 1 -fill both -side top
+
+    # make a menubutton for each instrument string
+    for { set i 0 } { $i < $ns } { incr i } {
+        set cs [ expr $i + 1 ]
+        menubutton $window.body.${i}_button -textvariable ${space}::temp_tuning($i) -menu $window.body.${i}_button.menu -direction right -indicatoron 0 -width 2
+        menu $window.body.${i}_button.menu 
+        foreach j $chromatic {
+            $window.body.${i}_button.menu add radiobutton -label $j -variable ${space}::temp_tuning($i) 
+        }
+        arrowbuttons $window.body.${i}_arrowframe standard "listprev -cycle ${space}::temp_tuning($i) {\$::chromatic}" "listnext -cycle ${space}::temp_tuning($i) {\$::chromatic}"
+        $window.body.${i}_button.menu entryconfigure 9 -columnbreak 1
+        label $window.body.${i}_label -justify left -text [ subst -nobackslashes -nocommands $messages(string:string_name) ]
+        grid $window.body.${i}_label -row $i -column 0 -sticky we -pady 1m -padx 2m
+        grid $window.body.${i}_button -row $i -column 1 -sticky we -pady 1m
+        grid $window.body.${i}_arrowframe -row $i -column 2 -sticky we -pady 1m
+    }
+    frame $window.body.presets
+    grid $window.body.presets -row $ns -column 0 -columnspan 3 -sticky we -pady 5m
+
+    switch  -glob -- $args {
+        {current} {
+            my_menubutton $window.body.presets.list -text $messages(string:tuning_presets) $preset_menu
+            pack $window.body.presets.list 
+            $window.buttons.ok configure -command "
+                history_add {$messages(history:tuning)}
+                array set ${curr_namespace}::tuning \[ array get ${space}::temp_tuning \]
+                redisplay_toend 0 
+                grab release $window 
+                destroy $window
+            "
+        }
+        {newtab*} {
+            my_menubutton $window.body.presets.list -text $messages(string:tuning_presets) $preset_menu
+            pack $window.body.presets.list 
+            $window.buttons.ok configure -command "
+                set prefs(tuning_$ns) \[array get ${space}::temp_tuning \]
+                save_prefs
+                grab release $window 
+                destroy $window
+            "
+        }
+        {presets*} {
+            label $window.body.presets.label -text $messages(string:name)
+            entry $window.body.presets.entry -textvariable ::defaults::tun_name
+            pack $window.body.presets.label -side left
+            pack $window.body.presets.entry -side right -fill x -expand true
+
+            # Insist that the user fill in a name for the tuning...
+            # If they didn't, change the gui to highlight the name entry box
+            $window.buttons.ok configure -command "
+                if { \"\$::defaults::tun_name\" == {} } {
+                    $window.body.presets.entry configure -highlightcolor red -highlightbackground indianred -insertbackground red -insertwidth 6 
+                    focus $window.body.presets.entry
+                } else {
+                    if { \[ info exists ::defaults::oldname \] } {
+                        array unset ::defaults::tunings_$ns \"\$::defaults::oldname\"
+                    }
+                    array set ::defaults::tunings_$ns \"{\$::defaults::tun_name} {\[array get ::defaults::temp_tuning \]}\"
+                    set ::defaults::tun_names_$ns \[ lsort \[ array names ::defaults::tunings_$ns \] \]
+                    grab release $window 
+                    destroy $window
+                }
+            "
+        }
+    }
+
+    place_transient $window
+    update idletasks
+    grab $window
+}
+
+proc toggle_lyrics_mode {} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::insert_mode
+    variable ${curr_namespace}::mode_old
+
+    if { $insert_mode == $messages(string:lyrics) } {
+        set insert_mode $mode_old
+        lyrics_done
+    } else {
+        set insert_mode $messages(string:lyrics)
+        lyrics_edit
+    }
+}
+
+# text edit window
+proc lyrics_edit {} {
+    global curr_namespace
+    global images
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::num_strings
+    
+    # change keyboard and mouse bindings
+    bindtags $tabwin [ lreplace [bindtags $tabwin ] 1 1 Lyricswindow ]
+    bindtags $tabwin.tablature [ lreplace [bindtags $tabwin.tablature ] 1 2 Lyrics Lyricswindow ]
+
+    # disable buttons not in use during lyrics editing
+    foreach disable_widget {tuning basefret basefret_legend} {
+        $tabwin.msg_frame.right_frame.$disable_widget configure -state disabled
+    }
+    $tabwin.msg_frame.right_frame.bfarrow_frame.up configure -image $images(disabled.up)
+    $tabwin.msg_frame.right_frame.bfarrow_frame.dn configure -image $images(disabled.dn)
+
+    # position cursor and set appearance of mouse pointer
+    array set current [ calc_rowcol $pos ]
+    $tabwin.tablature mark set insert "line$current(row) + $num_strings lines"
+    $tabwin.tablature see insert
+    $tabwin.tablature configure -cursor xterm -state normal
+
+    ghost_menu disable menu:select_all
+    # works around an apparent bug where tk forgets to make cursor blink
+    focus $tabwin ; update ;focus $tabwin.tablature
+
+    clear_mark
+    ghost_cutcopy disabled
+    recolor_tab_full -notwhitespace
+}
+
+# return to tablature editing mode from lyrics editing mode
+proc lyrics_done {args} {
+    global curr_namespace
+    global prefs
+    global initial_col
+    global images
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::insert_mode
+    variable ${curr_namespace}::mode_old
+    
+    set mode_old $insert_mode
+    # Return, doing nothing if just swtiching between chord/lead modes
+    if { [ lsearch -exact [ bindtags $tabwin.tablature ] Tablature ] > -1 } {
+        return
+    }
+
+    # change keyboard and mouse bindings
+    bindtags $tabwin [ lreplace [bindtags $tabwin ] 1 1 Tabwindow$num_strings ]
+    bindtags $tabwin.tablature [ lreplace [bindtags $tabwin.tablature ] 1 2 Tablature Tabwindow$num_strings ]
+
+    # enable buttons not in use during tablature editing
+    foreach enable_widget {tuning basefret basefret_legend} {
+        $tabwin.msg_frame.right_frame.$enable_widget configure -state normal
+    }
+    $tabwin.msg_frame.right_frame.bfarrow_frame.up configure -image $images(msg_frame_right.up)
+    $tabwin.msg_frame.right_frame.bfarrow_frame.dn configure -image $images(msg_frame_right.dn)
+
+    # position cursor and set appearance of mouse pointer
+    if { [ lindex $args 1 ] != "" } {
+        set xy $args
+    } else {
+        array set charinfo [ find_textpos insert ]
+        if { $charinfo(section) == "header" } {
+            set charinfo(section) line0
+        } elseif { $charinfo(section) == "footer" } {
+            array set charinfo [ find_textpos [ findmark previous footer ] ]
+        }
+        set xy [ $tabwin.tablature bbox "$charinfo(section) + $initial_col chars" ]
+    }
+    absolute_pos [ lindex $xy 0 ] [ lindex $xy 1 ]
+    $tabwin.tablature configure -cursor left_ptr -state disabled
+
+    ghost_menu normal menu:select_all
+    focus $tabwin.tablature
+    catch {$tabwin.tablature mark unset lyr_selection}
+    ghost_cutcopy disabled
+    recolor_tab_full -notwhitespace
+}
+
+# file open/save/export window
+proc open_dialog {} {
+    global curr_namespace
+    global ext
+    global open_types
+    global blank_tab
+    global cwd
+    global messages
+    global prefs
+    variable ${curr_namespace}::name
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::tab_data
+
+    set filename [my_filedialog tk_getOpenFile -title $messages(string:open) \
+        -parent $tabwin -defaultextension $ext($prefs(num_strings)) \
+        -initialdir $cwd -filetypes $open_types($prefs(num_strings)) ]
+
+    if { $filename == "" } {
+        return
+    }
+
+    set cwd [ file dirname $filename ]
+    # get new window for tab, unless current tab window is empty
+    if { $tab_data == $blank_tab($prefs(num_strings)) } {
+        set name $filename
+        open_tab
+    } else {
+        new_tab -file $filename
+    }
+}
+
+
+#
+# functions mapped to keypresses by end user
+#
+
+# **functions that affect overall mode
+
+# toggle chord/note mode
+proc toggle_insert_mode {} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::insert_mode
+    variable ${curr_namespace}::mode_old
+
+    if { $insert_mode == $messages(string:chord) } { 
+	set insert_mode $messages(string:lead)
+    } else {
+	set insert_mode $messages(string:chord)
+    }
+    set mode_old $insert_mode
+}
+
+# move the base fret up 1
+proc inc_basefret {} {
+    global curr_namespace
+    global maxbasefret
+    global messages
+    variable ${curr_namespace}::basefret
+    variable ${curr_namespace}::insert_mode
+
+    if { $insert_mode == $messages(string:lyrics) } {
+        return
+    }
+    if { $basefret < $maxbasefret } {
+      incr basefret
+    }
+    ghost_arrows 0 $maxbasefret $basefret
+}
+
+# move the base fret down 1
+proc dec_basefret {} {
+    global curr_namespace
+    global maxbasefret
+    global messages
+    variable ${curr_namespace}::basefret
+    variable ${curr_namespace}::insert_mode
+
+    if { $insert_mode == $messages(string:lyrics) } {
+        return
+    }
+    if { $basefret > 0 } {
+      incr basefret -1
+    }
+    ghost_arrows 0 $maxbasefret $basefret
+}
+
+# if basefret is at max or min, disable the corresponding spinbox arrow
+proc ghost_arrows {min max value} {
+    global curr_namespace
+    variable ${curr_namespace}::tabwin
+
+    if {$value == $min} {
+        $tabwin.msg_frame.right_frame.bfarrow_frame.dn configure -state disabled
+    } else {
+        $tabwin.msg_frame.right_frame.bfarrow_frame.dn configure -state normal
+    }
+    if {$value == $max} {
+        $tabwin.msg_frame.right_frame.bfarrow_frame.up configure -state disabled
+    } else {
+        $tabwin.msg_frame.right_frame.bfarrow_frame.up configure -state normal
+    }
+}
+
+    
+# **cursor movement
+
+# move back a position in the tab
+proc back {} {
+    global curr_namespace
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::col_max
+
+    if { $pos > 0 } {
+        set old_pos $pos
+	incr pos -1
+	recolor_tab_pos $old_pos
+	recolor_tab_pos $pos
+        see_currpos
+    }
+}
+
+# move forward a position in the tab
+proc forward {} {
+    global curr_namespace
+    variable ${curr_namespace}::data_end
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::col_max
+
+    if { $pos < $data_end } {
+	set old_pos $pos
+	incr pos
+	recolor_tab_pos $old_pos
+	recolor_tab_pos $pos
+        see_currpos
+    }
+}
+
+# move up a string
+proc up_string {} {
+    global curr_namespace
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::string
+
+    if { $string > 0 } {
+        incr string -1
+        recolor_tab_pos $pos
+    }
+}
+
+# move down a string
+proc down_string {} {
+    global curr_namespace
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::string
+
+    if { $string < [expr $num_strings - 1] } {
+        incr string
+        recolor_tab_pos $pos
+    }
+}
+
+
+# move up a score
+proc up_score {} {
+    global curr_namespace
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::col_max
+
+    set pos_new [ expr $pos - $col_max ]
+    if { $pos_new >= 0 } {
+        set pos_old $pos
+        set pos $pos_new
+        if { $mark == -1 } {
+            recolor_tab_pos $pos_old
+            recolor_tab_pos $pos
+        } else {
+            recolor_tab_full -notwhitespace
+        }
+        see_currpos
+    }
+}
+
+# move down a score
+proc down_score {} {
+    global curr_namespace
+    variable ${curr_namespace}::data_end
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::row
+    variable ${curr_namespace}::col_max
+
+    set pos_old $pos
+    set pos_new [ expr $pos + $col_max ]
+    set row [ lindex [ calc_rowcol $pos ] 1 ]
+    if { $pos_new <= $data_end } {
+        set pos $pos_new
+    } else {
+        set pos_new [ expr ( $row + 1 ) * $col_max ]
+        if { $pos_new <= $data_end } {
+            set pos $data_end
+        }
+    }
+    if { $pos != $pos_old } {
+        if { $mark == -1 } {
+            recolor_tab_pos $pos_old
+            recolor_tab_pos $pos
+        } else {
+            recolor_tab_full -notwhitespace
+        }
+        see_currpos
+    }
+}
+
+# move to start of score
+proc home {} {
+    global curr_namespace
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+
+    set pos_old $pos
+    set pos 0
+    if { $mark == -1 } {
+        recolor_tab_pos $pos_old
+        recolor_tab_pos $pos
+    } else {
+        recolor_tab_full -notwhitespace
+    }
+    see_currpos
+}
+
+# move to end of score
+proc end {} {
+    global curr_namespace
+    variable ${curr_namespace}::data_end
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+
+    set pos_old $pos
+    set pos $data_end
+    if { $mark == -1 } {
+        recolor_tab_pos $pos_old
+        recolor_tab_pos $pos
+    } else {
+        recolor_tab_full -notwhitespace
+    }
+    see_currpos
+}
+
+    
+# look for text 'marks', ignoring tk presets current and insert
+proc findmark {direction currindex} {
+    global curr_namespace
+    variable ${curr_namespace}::tabwin
+    
+    set section [ $tabwin.tablature mark $direction $currindex ]
+    while { ($section == "current") || ($section == "insert") || ( $section == "lyr_selection") } {
+        set section [ $tabwin.tablature mark $direction $section ]
+    }
+    return $section
+}
+
+# absolute position set via mouse click in tab mode
+proc absolute_pos {x y} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::insert_mode
+    variable ${curr_namespace}::col_max
+    variable ${curr_namespace}::row_sep_lines
+    variable ${curr_namespace}::score_width
+    variable ${curr_namespace}::data_end
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::row
+    variable ${curr_namespace}::row_height
+    variable ${curr_namespace}::string
+    variable ${curr_namespace}::tabwin
+    
+    focus $tabwin.tablature
+    array set new [ tabpos_from_xy $x $y ]
+
+    # if the mouse is within a score, move the current postion, there
+    if { ($new(col)<$col_max)&&($new(col)>=0)&&($new(string)>=0)&&($new(pos)>=0)&&($new(pos)<=$data_end)&&($new(string)<$num_strings) } {
+        set pos_old $pos
+        set pos $new(pos)
+        set string $new(string)
+        if { $mark == -1 } {
+            recolor_tab_pos $pos_old
+            recolor_tab_pos $pos
+        } else {
+            recolor_tab_full -notwhitespace
+        }
+    } elseif { $mark != -1 } {
+    # if we're dragging the mouse to select an area, approximate how a
+    # word processor would highlight, when "out of bounds"
+        if { $new(rowindex)=="header" } {
+            set pos 0
+        } elseif { $new(rowindex)=="footer" } {
+            return
+        } elseif { $new(row) < $new(row_mark) } {
+            set pos [ expr ( $new(row) + 1 ) * $col_max  ]
+        } elseif { $new(string) >= $num_strings } {
+            set pos [ calc_min [ expr ( $new(row) + 1 ) * $col_max - 1 ] $data_end ]
+        } else {
+            return
+        }
+        recolor_tab_full -notwhitespace
+    } else {
+        # check if clicked in textbox
+        array set charinfo [ find_textpos @$x,$y ]
+        if { ( [ $tabwin.tablature compare @$x,$y >= $charinfo(textstart) ] ) && ( [ $tabwin.tablature compare @$x,$y <= $charinfo(textend) ] ) } {
+            set insert_mode $messages(string:lyrics)
+            lyrics_edit
+            absolute_textpos $x $y
+        }
+    }
+    see_currpos
+}
+
+proc tabpos_from_xy {x y} {
+    global curr_namespace
+    global initial_col
+    global col_width
+    variable ${curr_namespace}::col_max
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::tabwin
+
+    # what text position corresponds to mouse position
+    set char_x [ lindex [ split [ $tabwin.tablature index @$x,$y ] . ]  1 ]
+    set char_y [ lindex [ split [ $tabwin.tablature index @$x,$y ] . ]  0 ]
+
+    # look for previous marker of the start of a row in the text
+    set rowindex [ findmark previous $char_y.$char_x ]
+    if { $rowindex == "" } {
+        return [ list pos -1 row -1 col -1 string -1 rowindex -1 row_mark -1 ]
+    }
+    if { ($rowindex == "header")||($rowindex == "footer") } {
+        set row_new -1
+    } else {
+        set row_new [ string range $rowindex 4 end ]
+    }
+    # compare exact location to start of row
+    set string_new [ expr $char_y - int( [$tabwin.tablature index $rowindex] ) ]
+    set col_new [ expr int ( ( $char_x - $initial_col ) / $col_width ) ]
+    set pos_new [ expr $row_new * $col_max + $col_new ]
+    set row_mark [ lindex [ calc_rowcol $mark ] 1 ]
+    return [ list pos $pos_new row $row_new col $col_new string $string_new rowindex $rowindex row_mark $row_mark ]
+}
+
+# scroll selection in tab window... altered version of tkTextAutoScan
+proc dragtab {w place_cursor} {
+    global tkPriv
+
+    if {![winfo exists $w]} {
+        return
+    }
+    array set scroll {x 1 y 1}
+    if {$tkPriv(y) >= [winfo height $w]} {
+        $w yview scroll 2 units
+    } elseif { $tkPriv(y) < 0 } {
+        $w yview scroll -2 units
+    } else {
+        unset scroll(y)
+    }
+    if {$tkPriv(x) > [winfo width $w]} {
+        $w xview scroll 2 units
+    } elseif {$tkPriv(x) < 0} {
+        $w xview scroll -2 units
+    } else {
+        unset scroll(x)
+    } 
+    if {[info exists scroll]} {
+        set tkPriv(afterId) [after 50 dragtab $w $place_cursor]
+        $place_cursor $tkPriv(x) $tkPriv(y)
+        update idletasks
+    }
+}
+
+# **insert/delete related functions
+
+# delete note cursor is over, but leave the rest of this position intact
+proc del_note {} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::string
+    variable ${curr_namespace}::tab_data
+
+    if { $mark != -1 } {
+        history_add $messages(history:delete)
+        cut_tab -redraw
+    } elseif { [ lindex [ lindex $tab_data $pos ] $string ] > -1 } {
+        history_add $messages(history:del_note)
+        set tab_data [ lreplace $tab_data $pos $pos [ lreplace [ lindex $tab_data $pos ] $string $string -1 ] ]
+        redraw_pos $pos
+    }
+}
+
+# delete position behind cursor
+proc backspace {} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+
+    history_add $messages(history:delete)
+    if { $mark != -1 } {
+        cut_tab -redraw
+    } else {
+        # don't do backspace functionality if already at beginning of tab
+        if { $pos > 0 } {
+            back
+            del_pos
+        }
+    }
+}
+
+
+# delete whole position
+proc del_pos {args} {
+    global blank_tab
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::data_end
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::tab_data
+
+    getopt opts history $args
+    if { $opts(history) > 0 } {
+        history_add $messages(history:delete)
+    }
+    if { $mark == -1 } {
+        set mark $pos
+    }
+    cut_tab -redraw
+}
+
+# add blank spaces to the end of the current line
+proc force_newline {} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::col_max
+
+    set pos_old $pos
+    history_add $messages(history:newline)
+
+    for { set i [ expr [ lindex [ calc_rowcol $pos ] 3 ] + 1 ]} { $i <= $col_max } { incr i } {
+        whitespace
+    }
+
+    redisplay_toend $pos_old
+}
+
+# insert new position
+proc add_blank {args} {
+    global blank_tab
+    global curr_namespace
+    global messages
+    global col_width
+    variable ${curr_namespace}::data_end
+    variable ${curr_namespace}::insert_mode
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::tab_data
+    variable ${curr_namespace}::col_max
+
+    getopt opts {advance history redraw} $args
+    if { $opts(history) > 0 } {
+        history_add $messages(history:blanktab)
+    }
+
+    # where to we insert the new blank?
+    if { $mark != -1 } { 
+        # if we delete whole tablature, cut_tab proc already inserts a blank
+        if { [ expr abs($mark - $pos) ] == $data_end } {
+            cut_tab
+            if { $opts(redraw) > 0 } {
+                redisplay_toend [ calc_max [ expr $pos - 1] 0 ]
+                see_currpos
+            }
+            return
+        }
+        set splitafter [ expr [ calc_min $pos $mark ] - 1]
+        cut_tab
+        # undoing the advance at the end if we had to cut tab, first
+        if { ( $opts(advance) > 0 ) } {
+            incr pos -1
+        }
+    } elseif { $opts(advance) > 0 } {
+        set splitafter $pos
+    } else {
+        set splitafter [ expr $pos - 1 ]
+    }
+
+    # adjust insertion for first, last, middle of tab
+    if { $splitafter == $data_end } {
+        set tab_data [ concat $tab_data $blank_tab($num_strings) ]
+    } elseif { $splitafter < 0 } {
+        set tab_data [ concat $blank_tab($num_strings) $tab_data ]
+    } else {
+        set tab_data [ concat [ lrange $tab_data 0 $splitafter ] $blank_tab($num_strings) [ lrange $tab_data [ expr $splitafter + 1 ] $data_end ] ]
+    }
+
+    # update ascii version
+    asciitab_replace [ expr $splitafter + 1 ] 0 1
+
+    if { $opts(advance) > 0 } {
+        incr pos
+    }
+    if { $opts(redraw) > 0 } {
+        redisplay_toend [ calc_max [ expr $pos - 1] 0 ]
+        see_currpos
+    }
+}
+
+# replace contents of current position with a bar
+proc whitespace {args} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::data_end
+    variable ${curr_namespace}::fret
+    variable ${curr_namespace}::insert_mode
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::tab_data
+
+    getopt opts {history redraw} $args
+    if { $opts(history) > 0 } {
+        history_add $messages(history:whitespace)
+    }
+
+    set redisplay $pos
+    add_blank
+    replace_pos {-16}
+
+    if { $pos >= $data_end } {
+        set pos $data_end
+        add_blank -advance
+    } else {
+        incr pos
+    }
+    if { $opts(redraw) > 0 } {
+        redisplay_toend $redisplay
+        see_currpos
+    }
+}
+
+# remove mark
+proc clear_mark {} {
+    global curr_namespace
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+
+    if { $mark != -1 } {
+        set mark -1
+        recolor_tab_full -notwhitespace
+        ghost_cutcopy disabled
+    }
+}
+
+# place mark
+proc set_mark {} {
+    global curr_namespace
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+
+    if { $mark == -1 } {
+        set mark $pos
+        recolor_tab_pos $pos
+        ghost_cutcopy normal
+    } 
+}
+
+# toggle mark on/off
+proc toggle_mark {} {
+    global curr_namespace
+    variable ${curr_namespace}::mark
+
+    if { $mark == -1 } {
+        set_mark 
+    } else {
+        clear_mark
+    }
+}
+
+# select all of tablature
+proc select_all {} {
+    global curr_namespace
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::data_end
+
+    set mark 0
+    set pos_old $pos
+    set pos $data_end
+    ghost_cutcopy normal
+    recolor_tab_full -notwhitespace
+    see_currpos
+}
+
+# decide what to do with menu requests for cut/paste based on tab/lyrics mode
+proc edit_menu {function} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::insert_mode
+    
+    if { $insert_mode != $messages(string:lyrics) } {
+        switch $function {
+            {cut} {
+                cut_tab -history -redraw
+            }
+            {copy} {
+                copy_tab
+            }
+            {clear} {
+                clear_tab
+            }
+            {paste} {
+                paste_tab
+            }
+        }
+    } else {
+        switch $function {
+            {cut} {
+                text_cut -history
+            }
+            {copy} {
+                text_copy
+            }
+            {clear} {
+                text_clear
+            }
+            {paste} {
+                text_paste
+            }
+        }
+    }
+}
+
+# copy tab into paste buffer
+proc copy_tab {} {
+    global curr_namespace
+    global pastebuf
+    global clip
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::tab_data
+
+    if { $mark != -1 } {
+        set clip [ tabdata_to_asciitab [ calc_min $pos $mark ] [ calc_max $pos $mark ]]
+        update_clipboard
+        set pastebuf [ lrange $tab_data [ calc_min $pos $mark ] [calc_max $pos $mark ] ]
+        clear_mark
+    }
+}
+
+# cut tab from screen into paste buffer
+proc cut_tab {args} {
+    global blank_tab
+    global curr_namespace
+    global pastebuf
+    global messages
+    global clip
+    variable ${curr_namespace}::data_end
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::tab_data
+
+    getopt opts {history redraw} $args
+    if { $mark != -1 } {
+        if { $opts(history) > 0 } {
+            history_add $messages(history:cut)
+            set clip [ tabdata_to_asciitab [ calc_min $pos $mark ] [ calc_max $pos $mark ]]
+            update_clipboard
+            set pastebuf [ lrange $tab_data [ calc_min $pos $mark ] [calc_max $pos $mark ] ]
+        }
+        set tab_data [ lreplace $tab_data [ calc_min $pos $mark ] [ calc_max $pos $mark ] ]
+        asciitab_replace [calc_min $pos $mark] [ expr abs($pos - $mark) + 1 ] 0 
+        set pos [ calc_min $pos $mark ]
+        if { $data_end < 0 } {
+            set tab_data [ concat $tab_data $blank_tab($num_strings) ]
+            set data_end 0
+            asciitab_replace all 0 0
+        }
+        set pos [ calc_min $pos $data_end ]
+        set mark -1
+        ghost_cutcopy disabled
+        if { $opts(redraw) > 0 } {
+            redisplay_toend $pos
+        }
+    }
+}
+
+# cut with addition to history buffer, but not to paste buffer
+proc clear_tab {} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::mark
+
+    if { $mark != -1 } {
+        history_add $messages(history:clear)
+        cut_tab -redraw
+    }
+}
+
+# paste from paste buffer
+proc paste_tab {} {
+    global curr_namespace
+    global pastebuf
+    global messages
+    global my_platform
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::tab_data
+
+    # on Unix, grab the paste data from primary eTktab window
+    # even if it's in another eTktab process
+    catch {set x_selection [selection get -selection ETKTAB]}
+    if { ($my_platform(platform) == "unix") && ([info exists x_selection]) } {
+        set pastebuf $x_selection
+    }
+    # do nothing if paste buffer is empty, or paste tab is mismatch 6/5/4 string
+    if { $pastebuf == "" } {
+        return
+    }
+    if { [ llength [ lindex $pastebuf 0 ] ] != $num_strings } {
+        return
+    }
+
+    history_add $messages(history:paste)
+    if { $mark != -1 } { 
+        cut_tab
+    }
+    set before [ lrange $tab_data 0 [ expr $pos - 1 ]]
+    set after [ lrange $tab_data $pos end ]
+    set tab_data [ concat $before $pastebuf $after ]
+    asciitab_replace $pos 0 [llength $pastebuf]
+    
+    redisplay_toend $pos
+}
+
+#insert note requested from keyboard bindings
+proc ins_note {askstring askfret} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::basefret
+    variable ${curr_namespace}::data_end
+    variable ${curr_namespace}::fret
+    variable ${curr_namespace}::insert_mode
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::string
+    variable ${curr_namespace}::tab_data
+    variable ${curr_namespace}::col_max
+	
+    
+    history_add $messages(history:note)
+    if { ( $mark != -1 ) || ( $insert_mode == $messages(string:lead) ) } {
+        set redisplay $pos
+        add_blank
+    } 
+
+    # user asked for 'open' string, or number above basefret?
+    if { $askfret == "o" } {
+        set fret 0
+    } else {
+        set fret [expr $basefret + $askfret ]
+    }
+
+    set string $askstring
+    set fret_old [ lindex [ lindex $tab_data $pos ] $string ]
+    if { $fret_old < -1 } {
+        replace_pos {-1}
+    }
+    
+    set fret [ expr ( 100 * int ( abs ( $fret_old ) / 100 ) ) + $fret ]
+    set tab_data [ lreplace $tab_data $pos $pos [ lreplace [ lindex $tab_data $pos ] $string $string $fret ] ]
+    asciitab_replace $pos 1 1
+
+    if { $insert_mode == $messages(string:lead) } {
+        if { $pos >= $data_end } {
+            set pos $data_end
+            add_blank -advance
+        } else {
+            incr pos
+        }
+    }
+    if { [ info exists redisplay ] } {
+        redisplay_toend $redisplay
+    } else {
+        redraw_pos $pos
+    }
+}
+
+# add or remove embellishments (hammer-on, pull-off, etc.)
+proc modifier {modnum} {
+    global curr_namespace
+    global embellish
+    global messages
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::string
+    variable ${curr_namespace}::tab_data
+
+    set fret_old [ lindex [ lindex $tab_data $pos ] $string ]
+    if { $fret_old > -1 } {
+        history_add $messages(history:expression)
+        set newfret  [ expr ( $fret_old % 100 ) + ( $modnum * 100 ) ]
+        set tab_data [ lreplace $tab_data $pos $pos [ lreplace [ lindex $tab_data $pos ] $string $string $newfret ] ]
+
+         if { $mark != -1 } {
+             clear_mark
+         }
+         redraw_pos $pos
+    }
+}
+
+# add or remove repeat marks from measure bar
+proc toggle_repeat {} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::tab_data
+
+    set fret_old [ lindex [ lindex $tab_data $pos ] 1 ]
+    if { ( $fret_old > -2 ) || ( $fret_old < -14 ) } {
+        return
+    }
+
+    history_add $messages(history:repeat)
+    set bar_values {-2 -10 -6 -14}
+    set newfret [ lindex $bar_values [ expr ([ lsearch -exact $bar_values [string trim $fret_old] ] + 1) % 4 ] ]
+
+    set second [ expr $num_strings - 2 ]
+    set tab_data [ lreplace $tab_data $pos $pos [ lreplace [ lreplace [ lindex $tab_data $pos ] 1 1 $newfret ] $second $second $newfret ] ]
+
+     if { $mark != -1 } {
+         clear_mark
+     }
+     redraw_pos $pos
+}
+
+# replace contents of current position with a bar
+proc bar {} {
+    global curr_namespace
+    global messages
+    variable ${curr_namespace}::data_end
+    variable ${curr_namespace}::fret
+    variable ${curr_namespace}::insert_mode
+    variable ${curr_namespace}::mark
+    variable ${curr_namespace}::pos
+    variable ${curr_namespace}::tab_data
+
+    set fret_old [ lindex [ lindex $tab_data $pos ] 0 ]
+    # don't need <= other neg numbers for repeat symbols only on two strings
+    # (not on string 0)
+    if { $fret_old == -2 } {
+        return
+    }
+
+    history_add $messages(history:bar)
+    if { ( $mark != -1 ) || ( $insert_mode == $messages(string:lead) ) } {
+        set redisplay $pos
+        add_blank
+    } 
+
+    # if the value is -2 it means there's the bar
+    replace_pos {-2}
+
+    if { $insert_mode == $messages(string:lead) } {
+        if { $pos >= $data_end } {
+            set pos $data_end
+            add_blank -advance
+        } else {
+            incr pos
+        }
+    }
+    if { [ info exists redisplay ] } {
+        redisplay_toend $redisplay
+    } else {
+        redraw_pos $pos
+    }
+}
+
+
+
+
+#######################################
+### BUILD THE GUI
+###
+
+proc build_gui {new_namespace} {
+    global curr_namespace
+    global ext
+    global maxbasefret
+    global prefs
+    global my_platform
+    global version
+    global embellish
+    global messages
+    global valid_numstrings
+    global lyrics_max
+    variable ${new_namespace}::tabwin
+    variable ${new_namespace}::winnum
+    variable ${new_namespace}::score_width
+    variable ${new_namespace}::num_strings
+
+    toplevel $tabwin -class Textwin
+    # set up keybindings common to all tabwindows with this number of strings
+    bindtags $tabwin [ linsert [bindtags $tabwin ] 1 Tabwindow$num_strings ]
+    bind $tabwin <FocusIn> "set ::curr_namespace $new_namespace"
+        frame $tabwin.tab_frame 
+            scrollbar $tabwin.scrollx -orient horizontal -command "$tabwin.tablature xview" 
+            scrollbar $tabwin.scrolly -command "$tabwin.tablature yview" 
+            text $tabwin.tablature -xscrollcommand "$tabwin.scrollx set" -yscrollcommand "$tabwin.scrolly set" -width $prefs(window_width) -height $prefs(window_height) -state disabled -exportselection false -highlightcolor white
+            $tabwin.tablature insert end "\n\n"
+            $tabwin.tablature mark set delend "end - 1 chars"
+            # load bindings, drop some standard Text bindings
+            bindtags $tabwin.tablature [ lreplace [bindtags $tabwin.tablature ] 1 1 Tablature Tabwindow$num_strings ]
+    
+        frame $tabwin.msg_frame 
+          frame $tabwin.msg_frame.right_frame
+            label $tabwin.msg_frame.right_frame.chord_lead_legend 
+            my_menubutton $tabwin.msg_frame.right_frame.chord_lead -textvariable ${new_namespace}::insert_mode "
+                {radiobutton -variable ${new_namespace}::insert_mode -label $messages(string:chord) -command lyrics_done}
+                {radiobutton -variable ${new_namespace}::insert_mode -label $messages(string:lead) -command lyrics_done}
+                {radiobutton -variable ${new_namespace}::insert_mode -label $messages(string:lyrics) -command lyrics_edit}
+            "
+    
+            label $tabwin.msg_frame.right_frame.basefret_legend
+            for { set i 0 } { $i <= $maxbasefret } { incr i } {
+                lappend basefret_entries "radiobutton -label $i -variable ${new_namespace}::basefret -command {ghost_arrows 0 $maxbasefret \$${new_namespace}::basefret}" 
+            }
+            my_menubutton $tabwin.msg_frame.right_frame.basefret -indicatoron 0 -textvariable ${new_namespace}::basefret -width 2 $basefret_entries
+            $tabwin.msg_frame.right_frame.basefret.menu entryconfigure 12 -columnbreak 1
+            arrowbuttons $tabwin.msg_frame.right_frame.bfarrow_frame msg_frame_right inc_basefret dec_basefret
+            $tabwin.msg_frame.right_frame.bfarrow_frame.dn configure -state disabled
+    
+            button $tabwin.msg_frame.right_frame.tuning -command "tuning_win current"
+    
+          frame $tabwin.msg_frame.left_frame
+            foreach ns $valid_numstrings {
+                lappend newtab_entries "command {new_tab -strings $ns}"
+                lappend stringpref_entries "radiobutton -variable prefs(num_strings) -value $ns -command {pref_numstrings $ns}"
+                lappend tunpref_entries "command {tuning_win newtab $ns}"
+                lappend tunpreset_entries "command {tuning_presets $ns}"
+            }
+            my_menubutton $tabwin.msg_frame.left_frame.file "
+                {cascade new {$newtab_entries}}
+                {command open_dialog}
+                {command -state disabled save_tab}
+                {command {save_tab -as}}
+                {command export_tab}
+                {command print_tab}
+                {command close_tab}
+                {command quit_safe}
+            "
+    
+        my_menubutton $tabwin.msg_frame.left_frame.edit "
+            {command -state disabled history_undo}
+            {command -state disabled history_redo}
+            separator
+            {command -state disabled {edit_menu cut}}
+            {command -state disabled {edit_menu copy}}
+            {command -state disabled {edit_menu clear}}
+            {command {edit_menu paste}}
+            {command select_all}
+            separator
+            {command {pref_format current}}
+            {cascade option {
+                {command pref_keybindings}
+                {command pref_language}
+                {command pref_fonts}
+                {command pref_colors}
+                separator
+                {cascade numstrings {$stringpref_entries}}
+                {cascade tun_default {$tunpref_entries}}
+                {cascade tun_presets {$tunpreset_entries}}
+                {command {pref_format default}}
+                separator
+                {command pref_revert}
+            }}
+        "
+    
+        menubutton $tabwin.msg_frame.left_frame.windows -menu $tabwin.msg_frame.left_frame.windows.menu
+        .docmenu clone $tabwin.msg_frame.left_frame.windows.menu
+        button $tabwin.msg_frame.left_frame.help -command help
+
+    grid rowconfig $tabwin.tab_frame 0 -weight 1 -minsize 0
+    grid columnconfig $tabwin.tab_frame 0 -weight 1 -minsize 0
+    grid $tabwin.tablature -in $tabwin.tab_frame -row 0 -column 0 -sticky news
+    grid $tabwin.scrolly -in $tabwin.tab_frame -row 0 -column 1 -sticky news
+    grid $tabwin.scrollx -in $tabwin.tab_frame -row 1 -column 0 -sticky news
+    
+    pack $tabwin.msg_frame.right_frame.tuning $tabwin.msg_frame.right_frame.chord_lead $tabwin.msg_frame.right_frame.chord_lead_legend $tabwin.msg_frame.right_frame.bfarrow_frame $tabwin.msg_frame.right_frame.basefret $tabwin.msg_frame.right_frame.basefret_legend -side right -anchor e -ipady 2
+    pack $tabwin.msg_frame.left_frame.file $tabwin.msg_frame.left_frame.edit $tabwin.msg_frame.left_frame.windows $tabwin.msg_frame.left_frame.help -side left -anchor w -ipady 2
+    
+    pack $tabwin.msg_frame.left_frame -side left -fill y
+    pack $tabwin.msg_frame.right_frame -side right -fill y
+    pack $tabwin.msg_frame -side top -fill both
+    pack $tabwin.tab_frame -side bottom -fill both -expand true
+    
+    wm protocol $tabwin WM_DELETE_WINDOW "set ::curr_namespace $new_namespace ; close_tab"
+    wm title $tabwin "eTktab$version - $messages(string:untitled)$winnum"
+    #ms-windows doesn't seem to want to focus on our new toplevel windows
+    if {$my_platform(platform)=="windows"} {
+        update idletasks
+        focus -force $tabwin
+    }
+    if {$my_platform(platform)=="macintosh"} {
+            pack forget $tabwin.msg_frame.left_frame
+            $tabwin configure -menu $tabwin.menubar
+            menu $tabwin.menubar
+            $tabwin.menubar add cascade -menu $tabwin.menubar.file -label $messages(menu:file)
+            $tabwin.msg_frame.left_frame.file.menu clone $tabwin.menubar.file
+            $tabwin.menubar add cascade -menu $tabwin.menubar.edit -label $messages(menu:edit)
+            $tabwin.msg_frame.left_frame.edit.menu clone $tabwin.menubar.edit
+            $tabwin.menubar add cascade -menu .docmenu -label $messages(menu:windows)
+            $tabwin.menubar add cascade -menu $tabwin.menubar.apple
+            .mac_menus.apple clone $tabwin.menubar.apple
+            $tabwin.menubar add cascade -menu $tabwin.menubar.help
+            .mac_menus.help clone $tabwin.menubar.help
+    }
+
+    set curr_namespace $new_namespace
+
+    history_clear
+    label_gui
+    label_menu_accel
+    color_gui
+    refresh_winmenu
+}
+
+# put strings in each widget (buttons, menus, etc.)
+proc label_gui {} {
+    global curr_namespace
+    global gui_text
+    global gui_label
+    global messages
+    variable ${curr_namespace}::tabwin
+    variable ${curr_namespace}::undo
+    variable ${curr_namespace}::redo
+
+    # labels and buttons
+    foreach text_key [ array names gui_text ] {
+        foreach widget $gui_text($text_key) {
+            ${tabwin}.$widget configure -text $messages($text_key)
+        }
+    }
+
+    # prepare for undo and redo menu entries
+    set undo_menu $undo(last_action)
+    set redo_menu $redo(last_action)
+
+    # most menu entries
+    foreach text_key [ array names gui_label ] {
+        foreach widget $gui_label($text_key) {
+            ${tabwin}.[lindex $widget 0] entryconfigure [lindex $widget 1] -label [ subst -nocommands -nobackslashes $messages($text_key) ]
+        }
+    }
+
+    set mb_width 0
+    foreach i "chord lead lyrics" {
+        if { [ string length $messages(string:$i) ] > $mb_width } {
+            set mb_width [ string length $messages(string:$i) ]
+        }
+    }
+    $tabwin.msg_frame.right_frame.chord_lead configure -width $mb_width
+}
+
+# assign fonts and colors to tab window
+proc color_gui {} {
+    global curr_namespace
+    global prefs
+    global my_platform
+    global images
+    variable ${curr_namespace}::tabwin
+
+    #all other widgets... 
+    foreach widget [info commands $tabwin.* ] {
+        switch -glob -- $widget {
+            {*.tab_frame}
+                -
+            {*.msg*frame} {
+                $widget configure -background $prefs(color_menu_bg)
+            }
+            {*.tablature} {
+                $tabwin.tablature configure -background $prefs(color_tab_bg_default) -foreground $prefs(color_tab_fg_default) -font $prefs(font_tab) -insertbackground $prefs(color_tab_fg_currstring)
+                $tabwin.tablature tag configure whitespace -overstrike on -fgstipple gray25
+                $tabwin.tablature tag configure marked -background $prefs(color_tab_bg_sel) -borderwidth 1 -relief raised
+                $tabwin.tablature tag configure currpos -foreground $prefs(color_tab_fg_currpos)
+                $tabwin.tablature tag configure currstring -foreground $prefs(color_tab_fg_currstring)
+            }
+            {*.msg_frame.*} {
+                regexp {\.msg_frame\.([a-z]+)} $widget figa side
+                $widget configure -background $prefs(color_menu_bg) -foreground $prefs(color_menu_fg_$side) 
+                catch { $widget configure -highlightbackground $prefs(color_menu_bg) }
+                #certain widgets can't have diff fonts macos
+                if {$my_platform(platform)!="macintosh"} {
+                    $widget configure -font $prefs(font_statusbar)
+                }
+            }
+            {*.scrollx}
+                -
+            {*.scrolly} {
+                $widget configure -background $prefs(color_menu_bg) -highlightbackground $prefs(color_menu_bg) -activebackground $prefs(color_menu_bg)
+            }
+        }
+    }
+    #to change color of 'spinbox' arrows, have to change image, not widget
+    foreach i {up dn} {
+        $images(msg_frame_right.$i) configure -foreground $prefs(color_menu_fg_right)
+    }
+}
+
+# write in menu "key accellerator" text
+proc label_menu_accel {} {
+    global curr_namespace
+    global keynames
+    global gui_accel
+    global valid_numstrings
+    global prefs
+    variable ${curr_namespace}::num_strings
+    variable ${curr_namespace}::tabwin
+
+    # put text version of keystrokes into menu text
+    foreach widget [ array names gui_accel ] {
+        ${tabwin}.[lindex $gui_accel($widget) 0] entryconfigure [lindex $gui_accel($widget) 1] -accelerator [lindex $keynames($widget) 0]
+    }
+    # add accel for 'new' to our preferred numstrings for new tab
+    foreach ns $valid_numstrings {
+        if { $ns == $prefs(num_strings) } {
+            $tabwin.msg_frame.left_frame.file.menu.new entryconfigure "${ns}*" -accelerator [lindex $keynames(new) 0]
+        } else {
+            $tabwin.msg_frame.left_frame.file.menu.new entryconfigure "${ns}*" -accelerator ""
+        }
+    }
+}
+
+    
+#######################################
+### MAIN:
+### READ COMMAND LINE AND PREFS; INITIALIZE CONTENTS OF MAIN WINDOW 
+### 
+
+# set up tk defaults for widgets
+foreach i [ array names tabwin_options ] {
+    option add $i $tabwin_options($i) 50
+}
+# designate handlers for clipboard access from X-Windows
+selection handle -selection "CLIPBOARD" . clipboard_dump
+selection handle -selection "PRIMARY" . clipboard_dump
+selection handle -selection "ETKTAB" . pastebuf_dump
+# undo standard Tk bindings that conflict with program bindings
+bind all <Alt-KeyPress> {}
+bind all <Key-Tab> {}
+
+# set up a menu of the windows that are in use
+menu .docmenu
+# color the disabled spinbuttons
+$images(disabled.up) configure -foreground [ .docmenu cget -disabledforeground ]
+$images(disabled.dn) configure -foreground [ .docmenu cget -disabledforeground ]
+# load in preferences
+load_prefs
+# load global keybindings
+keybind_global
+
+# OS Specific stuff
+switch $my_platform(platform) {
+    {macintosh} {
+        # tkOpenDocument doesn't work correctly on mac no windows are mapped
+        # so we make the window appear offscreen, instead
+        wm geometry . 1x1-25000-25000
+        . configure -menu .mac_menus
+        menu .mac_menus 
+            .mac_menus add cascade -menu .mac_menus.apple
+                menu .mac_menus.apple
+                .mac_menus.apple add command -label $messages(title:about) -command about
+            .mac_menus add cascade -menu .mac_menus.help
+                menu .mac_menus.help
+                .mac_menus.help add command -label [subst -nocommands -nobackslashes $messages(title:help)] -command help
+        # hide the tcl/tk console window, but add shortcut so programmer
+        # can use it for debugging ;-)
+        console hide
+        bind all <Control-Option-ButtonPress> {console show}
+    }
+    {windows} {
+        # figure out if there's already a running eTktab
+        if { [dde services TclEval eTktab] == "" } {
+            # register as a dde server
+            dde servername eTktab
+        } else {
+            # already a copy running... tell it to open a new window and quit
+            dde execute TclEval eTktab {new_tab}
+            __exit_now
+        }
+        wm withdraw .
+        . configure -menu .win_menus
+        menu .win_menus 
+            .win_menus add cascade -menu .win_menus.system
+                menu .win_menus.system
+                .win_menus.system add command -label $messages(title:about) -command about
+        # add shortcut to pull up console window so programmer
+        # can use it for debugging ;-)
+        bind all <Control-Alt-ButtonPress-1> {console show}
+    }
+    default {
+        #Unix
+        wm withdraw .
+        # give usage statement.  -b no longer allowed; replaced by preferences
+        if { [ string index [lindex $argv 0] 0 ] == "-" } {
+            puts [subst -nocommands -nobackslashes $messages(string:usage)]
+            __exit_now
+        }
+    }
+}
+
+set req_file ""
+set used_dragdrop 0
+# In windows installation program, we're setting the registry to send us
+# __dde__ on the command line when the program isn't running, but the user
+# double-clicked a document
+if { [ lindex $argv 0 ] == "__dde__" } {
+    set used_dragdrop 1
+} elseif { $argv != "" } {
+    # initial filename on command line?
+    foreach i  [list "${cwd}/" "" ] {
+        if { $used_dragdrop } {
+            break
+        }
+        foreach j [concat {{}} $open_types($prefs(num_strings))] {
+            if {$j != ""} {
+                set j [ lindex $j 1]
+                if { ! ([string match {.et*} $j]) } {
+                    continue
+                }
+            }
+            # if filename is valid, open it
+            if { [ file exists ${i}[lindex $argv 0]${j} ] } {
+                set cwd [ file dirname $req_file ]
+                set used_dragdrop 1
+                new_tab -file ${i}[lindex $argv 0]${j} 
+                break
+            }
+        }
+    }
+}
+
+# look for incoming mac drag/drop events
+update
+
+# on mac/win the following will check if we started via drag & drop
+# If we did, we don't need to create an initial window, because it will
+# be created for us via the tkOpenDocument proc
+if { $used_dragdrop == 0 } {
+    # Initialize empty window
+    new_tab
+}
+

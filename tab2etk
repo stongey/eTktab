@@ -1,0 +1,667 @@
+#!/usr/bin/env perl
+
+# $Id: tab2etk,v 1.7 2003/09/24 11:22:08 swiney Exp $
+
+=head1 tab2etk
+
+tab2etk attempts to convert ascii tablature files to the etktab format.
+Run with -h to see options.
+
+written by Jason Sonnenschein <jes_jm@yahoo.com>
+       and Juha Erkkilä <erkkila@cc.jyu.fi>
+
+no copyright, this is in public domain
+
+=cut
+
+# load necessary Perl Modules
+use IO::Handle;
+use Getopt::Std;
+use strict;
+use warnings;
+
+# CONSTANTS
+
+use constant VERSION            => "1.0";
+use constant VALIDSTRINGS_MIN   => 4;
+use constant VALIDSTRINGS_MAX   => 7;
+use constant HUNT_TUNING_LINES  => 20;
+use constant INITIAL_COL        => 3;
+use constant COL_WIDTH          => 3;
+use constant EMBELLISH          => {
+    'h' => 100, 'p' => 200,     '^' => 300, '~' => 400,
+    '/' => 500, '\\' => 600,    's' => 700, 'b' => 800,
+    'r' => 900, 't' => 1000,    '' => 0
+};
+use constant BARLINES       => {
+    '|' => -2,      'o|' => -6,     '.|' => -6,     '|o' => -10,
+    '|.' => -10,    'o|o' => -14,   '.|.' => -14
+};
+use constant GUITAR_TUNINGS => {
+    "Standard"      => "E \nB \nG \nD \nA \nE \n",
+    "Double.Drop.D" => "D \nB \nG \nD \nA \nD \n",
+    "Drop.D",       => "E \nB \nG \nD \nA \nD \n",
+    "Open.G",       => "D \nB \nG \nD \nG \nD \n",
+    "Open.D",       => "D \nA \nF#\nD \nA \nD \n",
+    "Open.A",       => "E \nC#\nA \nE \nA \nE \n",
+    "Open.E",       => "E \nB \nG#\nE \nB \nE \n",
+    "E.minor",      => "E \nB \nG \nE \nB \nE \n",
+    "Open.C",       => "E \nC \nG \nC \nG \nC \n",
+    "Orkney",       => "D \nC \nG \nD \nG \nC \n"
+};
+use constant DEFAULT_TUNING => {
+    4 => "G \nD \nA \nE \n",
+    5 => "D \nB \nG \nD \nG \n",
+    6 => "E \nB \nG \nD \nA \nE \n",
+    7 => "D \nG \n C \nF \nA \nD \nG \n"
+};
+
+# Process command line and print help message if necessary
+
+our ($opt_d,$opt_s,$opt_o,$opt_h,$opt_l);
+
+getopts('hdls:o:');
+if ((!@ARGV)||($opt_h)) {
+    print STDERR <<EOF ;
+usage:  $0 [options] <tablature file>
+\t-d\t\tprint debugging info.
+\t-l\t\tuse liberal pattern matching to find scores
+\t-s <n>\t\ttab for <n>-stringed instrument (usually auto-detected)
+\t-o <file>\toutput to <file> (rather than STDOUT)
+\t-h\t\tprint this usage summary
+\t\t**Disclaimer: internet TAB is _extremely_ varied
+\t\t              don't expect perfection of translation
+EOF
+    exit;
+}
+
+
+# MAIN
+{
+    my (
+        %lyrics,        # keys are /(header|footer|line(\d)+)/, values are
+                        # sections with  as newlines
+        @etk,           # an array of arrays of notes
+        @pattern_list,  # a list of possible patterns to identify scorelines
+        @rawlines,      # the input file split into an array
+        $num_strings,   # how many strings in the tab
+        @scorestart,    # an array of lines in the inputfile where scores begin
+        $tuning,        # tuning in a string of the format /(SS\n){4,7}/,
+                        # where SS is a string in two letters (e.g. "E ", "A#")
+        @clef,          # the width of "clef" for each score
+        $max_x          # the length of the widest line of tablature
+    );
+    
+    &compile_score_patterns(\@pattern_list);
+    &open_tab_file(\@rawlines);
+    $num_strings=&find_scores(\@pattern_list,\@rawlines,\@scorestart);
+    $tuning=&find_tuning(\@rawlines,$num_strings,\@scorestart);
+    $max_x=&split_scores(\@rawlines,$num_strings,\%lyrics,\@scorestart,\@clef);
+    $max_x=&parse_tab(\@etk,\@rawlines,$num_strings,\@clef,\@scorestart,$max_x);
+    &write_etk_file($num_strings,$tuning,\@etk,$max_x,\%lyrics);
+}
+
+# SUBROUTINES
+
+sub compile_score_patterns {
+    # many patterns, by combining each "prefix" with each "suffix"...
+    #   both the prefix and suffix lists are in order of most to least
+    #   specific the program tries every suffix with prefix 0 before going
+    #   to prefix 1 removed the following two suffixes... they often match
+    #   lyrics lines
+    my ($pattern_list) = @_;
+    my ($prefix, $suffix);
+    foreach $suffix (
+        '[\|\-0-9]+[\-\|o\.hHpP\^~\/\\sSbBrRtTxX0-9]+\s*$', 
+        '\|+[\-\|0-9]+', 
+        '[\-\|0-9]+' 
+    ) {
+        foreach $prefix (
+            '^\s*[TtAaBb]?\s*[0-7]?\s*[a-gA-G][#b:_]?\s*',
+            '^\s*[0-7]?\s*[TtAaBb]?\s*[a-gA-G][#b:_]?\s*',
+            '^\s*[TtAaBb]\s*[0-7]?\s*',
+            '^\s*[0-7]\s*[TtAaBb]?\s*',
+            '^\s*'
+        ) {
+            push (@{$pattern_list}, "${prefix}$suffix") ;
+        }
+    }
+    if ($opt_l) {
+        @{$pattern_list}=('\-{3}');
+    }
+}
+
+# grab tablature lines, stripping whitespace from end of line
+sub open_tab_file {
+    my ($rawlines) = @_;
+    if (! open (TAB, $ARGV[0]) ) {
+      print STDERR "Could not open $ARGV[0]\n";
+      exit;
+    }
+    while(<TAB>) {
+        s/\s*$//o;
+        push @{$rawlines},$_;
+    }
+    close(TAB);
+}
+
+sub find_scores {
+    my ($pattern_list,$rawlines,$scorestart) = @_;
+    my (%scores,%matches,@match_count,$num_strings);
+    &get_scores_and_matches(\%scores,\%matches,$pattern_list,$rawlines);
+    $num_strings = &get_scorestarts($scorestart,\@match_count,\%scores,\%matches);
+    return $num_strings;
+}
+
+# use the patterns to find what looks like scores in the tablature file,
+# record the number of strings believed to be in each score found
+sub get_scores_and_matches {
+    my ($scores,$matches,$pattern_list,$rawlines) = @_;
+    if ($opt_d) {
+        print STDERR "Analyzing $ARGV[0]...\n";
+        if ($opt_l) {
+            print STDERR "  Using liberal pattern matching to identify tab scores";
+        } else {
+            print STDERR "  Trying various patterns to identify tab scores";
+        }
+    }
+    # try every pattern, even if one has already matched
+    foreach my $pat (@{$pattern_list}) {
+        my ($score_count,$current_line,$num_strings) = (0, 0, 0);
+        if ($opt_d) {
+            print STDERR ".";
+            flush STDERR;
+        }
+        while ($current_line <= $#{$rawlines}) {
+            $_=${$rawlines}[$current_line];
+            # this line appears to be a line of tablature
+            if (/$pat/) {
+                # in first score found in tab
+                if (!$score_count) {
+                    $num_strings++;
+                    $current_line++;
+                } else {
+                    if ((!$opt_s)||($opt_s==$num_strings)) {
+                        ${$scores}{$current_line}=1;
+                    }
+                    # skip to believed end of this score
+                    $current_line+=$num_strings;
+                }
+              # end of first score of tablature
+            } elsif (($num_strings)&&(!$score_count)) {
+                # throw out if not in valid range for num_strings
+                if (($num_strings < VALIDSTRINGS_MIN) || ($num_strings > VALIDSTRINGS_MAX)) {
+                    last;
+                }
+                $score_count=1;
+                ${$matches}{$num_strings}=1;
+                if ((!$opt_s)||($opt_s==$num_strings)) {
+                    ${$scores}{$current_line-$num_strings}=1;
+                }
+                $current_line++;
+            } else {
+                $current_line++;
+            }
+        }
+    }
+}
+
+# record starting line # of each score in the tab file
+sub get_scorestarts {
+    my ($scorestart,$match_count,$scores,$matches) = @_;
+    my ($num_strings) = 0;
+    
+    @{$match_count}=sort numerically (keys %{$matches});
+    if (($opt_s)&&(${$matches}{$opt_s})) {
+    # user specified on command line how many strings per score
+        $num_strings=$opt_s;
+        if ($opt_d) {
+            print STDERR "\n    ${num_strings}-string tablature (from user.)\n";
+        }
+    # only one valid analysis of strings/score
+    } elsif ($#{$match_count} == 0) {
+        $num_strings=${$match_count}[0];
+        if ($opt_d) {
+            print STDERR "\n    ${num_strings}-string tablature.\n";
+        }
+    # multiple patterns matched with different analyses of strings per score
+    # quit and ask the user to specify which analysis is correct
+    } elsif ($#{$match_count} > 0) {
+        my ($message) = "\n    Could not decide... tablature for a ";
+        my ($conjunction) = ", ";
+        foreach my $option (@{$match_count}) {
+            if ( $option eq ${$match_count}[-2] ) {
+                $conjunction.="or ";
+            } elsif ( $option eq ${$match_count}[-1] ) {
+                $conjunction=" ";
+            }
+            $message.="${option}$conjunction";
+        }
+        $message.="stringed instrument.\n    Please re-run program with -s option.\n";
+        print STDERR $message;
+        exit;
+    # no patterns found a score of tab
+    } else {
+        print STDERR "\n    Sorry, I can't read this tablature.\n";   
+        if (!$opt_l) {
+            print STDERR "    Try running again with -l option.\n";
+        }
+        exit;
+    }
+    # look for overlapping scores
+    @{$scorestart} = sort numerically ( keys %{$scores} );
+    foreach my $i (@{$scorestart}) {
+        for my $y ($i+1 .. $i+$num_strings-1) {
+            if (${$scores}{$y}) {
+                print STDERR "    Found overlapping scores.\n    Perhaps some lyrics lines look like tablature.\n";
+                exit;
+            }
+        }
+    }
+    return $num_strings;
+}
+
+# used as a subcommand for 'sort'
+sub numerically { $a <=> $b }
+
+# look for instrument tuning in the tablature file
+sub find_tuning {
+    my ($rawlines,$num_strings,$scorestart) = @_;
+    my ($tuning);
+
+    if ($opt_d) {
+        print STDERR "  Trying to determine instrument tuning.\n";
+    }
+    # Try to read instrument tuning from "clef" of first score
+    if (${$rawlines}[${$scorestart}[0]]=~/^\s*[TtAaBb0-7\s]*[a-gA-G][#b]?/o) {
+        my ($print_tuning) = "";
+        # look in the "clef" of scores for string tunings
+        foreach $_ (@{$rawlines}[${$scorestart}[0]..(${$scorestart}[0]+$num_strings-1)]) { 
+            my ($string);
+            /^\s*[TtAaBb0-7\s]*([a-gA-G][#b]?)/o;
+            $string=uc $1;
+            $print_tuning=$string.$print_tuning;
+            if (length($string) == 1) {
+                $string.=" ";
+            }
+            $tuning.="$string\n";
+        }
+        if ($opt_d) {
+            print STDERR "    $print_tuning\n";
+        }
+    # look for memorized tuning names in header text
+    } elsif ($num_strings==6) {
+        foreach $_ (@{$rawlines}) {
+            my ($lines_read);
+            foreach my $name (keys %{GUITAR_TUNINGS()}) {
+                if ((/"tuning.*$name"/i)||(/"$name.*tuning"/i)) {
+                    if ($opt_d) {
+                        print STDERR "    Guessed $name tuning, please doublecheck.\n";
+                    }
+                    $tuning=GUITAR_TUNINGS->{$name};
+                    last;
+                }
+            } 
+            $lines_read++;
+            if (($lines_read>=HUNT_TUNING_LINES)||($tuning)) {
+                last;
+            }
+        }
+    }
+    # look for list of tuning for each string in header text
+    if ( ! $tuning ) {
+        foreach $_ (@{$rawlines}) {
+            if ((/tuning.*([A-G][#b]?\s*){$num_strings}/i)||(/([A-G][#b]?\s*){$num_strings}.*tuning/i)) {
+                my ($pat,@tuned_strings);
+                for my $i (0 .. ($num_strings - 1)) {
+                    $pat.='([A-G][#b]?\s*)';
+                }
+                if (@tuned_strings = /$pat/) {
+                    $tuning = join("\n", @tuned_strings);
+                }
+                if ($opt_d) {
+                    print STDERR "    Guessed ${&}, please doublecheck.\n";
+                }
+            }
+        }
+    }
+    # previous searches failed, use default tuning for this many strings
+    if ( ! $tuning ) {
+        if ($opt_d) {
+            print STDERR "    CAN'T FIND TUNING, using default for ${num_strings}-stringed instrument.\n";
+        }
+        $tuning=DEFAULT_TUNING->{$num_strings};
+    } 
+    return $tuning;
+}
+
+# stash lyrics and tablature into arrays/hashes
+sub split_scores {
+    my ($rawlines,$num_strings,$lyrics,$scorestart,$clef) = @_;
+    my ($endscore,$max_x,$numclef,$line,$do_footer) =
+        (-1,0,&create_numclef($num_strings));
+    if ($opt_d) {
+        print STDERR "  Reading in text.\n";
+    }
+    for my $score (0 .. $#{$scorestart}) {
+        my (@asciitab);
+        # stash away the contents of the score
+        for $line (${$scorestart}[$score] .. (${$scorestart}[$score]+$num_strings-1)) {
+            push @{ $asciitab[$score] }, [split //,${$rawlines}[$line]];
+        }
+        &find_clef($clef,\@asciitab,$score,$num_strings,$numclef);
+        #grab text that preceeds this tab score for lyrics box
+        $max_x=&gettext($score,${$scorestart}[$score],$endscore,$rawlines,$clef,$max_x,$lyrics);
+        $endscore=${$scorestart}[$score]+$num_strings-1;
+    }
+    # are text lines below last score just lyrics for last score, or
+    # is there also a 'footer' section?
+    $line=$endscore+1;
+    while ($line<=$#{$rawlines}) {
+        $_=${$rawlines}[$line];
+        if (/^\s*$/o) {
+            $do_footer=1;
+            last;
+        }
+        $line++;
+    }
+    $max_x=&gettext($#{$scorestart}+1,$line,$endscore,$rawlines,$clef,$max_x,$lyrics);
+    $endscore=$line;
+    $line++;
+    if ($do_footer) {
+        $max_x=&gettext(-2,$#{$rawlines}+1,$endscore,$rawlines,$clef,$max_x,$lyrics);
+    }
+    # return width of widest lyrics line
+    return $max_x;
+}
+
+# create patterns of typical clefs to pattern match with, later
+sub create_numclef {
+    my (@nc);
+    for my $i (1 .. $_[0]) {
+        $nc[0].=$i;
+        $nc[1].=($i-1);
+        $nc[2].=($_[0]-$i);
+        $nc[3].=($_[0]-$i+1);
+    }
+    return "($nc[0])|($nc[1])|($nc[2])|($nc[3])";
+}
+
+# find width of "clef," for this score of tab
+sub find_clef {
+    my ($clef,$asciitab,$score,$num_strings,$numclef) = @_;
+    my ($noblanks,$tab_pos,%blank_pos) = (0,0,());
+    # step backwards, right to left along score
+    for (my $pos=$#{${$asciitab}[$score][0]};$pos>=0;$pos--) {
+        my ($col) = "";
+        # look at columns of characters, rather than rows
+        for my $string (0 .. ($num_strings-1)) {
+            $col.=${$asciitab}[$score][$string][$pos] ?
+                 ${$asciitab}[$score][$string][$pos] : "0";
+        }
+        # does this column look like the clef at the start of the line?
+        if ($col=~/^$numclef$/) {
+            last;
+        # column is blank tablature
+        } elsif ($col=~/^\-{$num_strings}$/) {
+            $blank_pos{$pos}=1;
+            $noblanks=$pos;
+        # column is tablature
+        } elsif ($col=~/^[hpbrstxHPBRSTX\/\\~\^0-9\-]{$num_strings}$/) {
+            $tab_pos=$pos;
+        }
+    }
+    # ignore blank tab just after clef, if it's less than one tab position
+    if ($tab_pos - $noblanks > COL_WIDTH) {
+        if (($score > 0)&&($noblanks<=${$clef}[($score-1)])&&($tab_pos>=${$clef}[($score-1)])) {
+            ${$clef}[$score]=${$clef}[($score-1)];
+        } else {
+            ${$clef}[$score]=$noblanks;
+        }
+    } elsif ($blank_pos{($tab_pos - 1)}) {
+        ${$clef}[$score]=$tab_pos - 1;
+    } else {
+        ${$clef}[$score]=$tab_pos;
+    }
+}
+
+# process lyrics box and stash in an array
+sub gettext {
+    my ($score,$first_line_of_next_score,$endscore,$rawlines,$clef,$max_x,$lyrics) = @_;
+    $score -= 1;
+    my (@txt,$key,$indent);
+    
+    #adjust 'margins' for differences in clef width between tab and etktab
+    #for lyrics sections (but not header or footer)
+    if ($score<0) {
+        $indent=0;
+    } else {
+        $indent=${$clef}[$score] - INITIAL_COL;
+    }
+    foreach my $line (@{$rawlines}[($endscore+1)..($first_line_of_next_score-1)]) {
+        if ($indent<0) {
+            $line=substr("                    ",0,($indent*(-1))).$line;
+        } elsif ($indent>0) {
+            $line=~s/^\s{0,$indent}//;
+        }
+        #keep track of longest line
+        if (length($line)>$max_x) {
+            $max_x=length($line);
+        }
+        push @txt,"$line\n";
+    }
+    #strip blank lines from beginning, end of text
+    while ((@txt)&&($txt[0]=~/^\s*$/o)) {
+        shift(@txt);
+    }
+    while ((@txt)&&($txt[$#txt]=~/^\s*$/o)) {
+        pop(@txt);
+    }
+    #put text in appropriate section
+    if ($score > -1) {
+        $key="line$score";
+    } elsif ($score == -1) {
+        $key="header";
+    } else {
+        $key="footer";
+    }
+    #convert endlines to ^G
+    ${$lyrics}{$key}=join("",@txt);
+    ${$lyrics}{$key}=~s/(\n\r)|(\r\n)|(\n)|(\r)//go;
+    if (${$lyrics}{$key} eq "") {
+        ${$lyrics}{$key}="";
+    }
+    return $max_x;
+}
+
+# parse the tablature scores into numerical representation that etktab wants
+sub parse_tab {
+    my ($etk,$rawlines,$num_strings,$clef,$scorestart,$max_x) = @_;
+    if ($opt_d) {
+        print STDERR "  Reading in tablature.\n";
+    }
+    
+    # record column/string coordinates in tablature of 'significant' stuff
+    # and sort into an array by width of the found tab
+    for my $score (0 .. $#{$scorestart}) {
+        my ($last_grab, %grab_this);
+        for my $string (0 .. ($num_strings - 1)) {
+            $_=${$rawlines}[(${$scorestart}[$score]+$string)];
+            # look for two-digit fret numbers
+            pos = ${$clef}[$score];
+            while (/(\D*\d{2})/go) {
+                $grab_this{(pos)-1}{2}{$string}=$1;
+            }
+            # look for single-digit fret numbers
+            if ( substr($_,${$clef}[$score],2) =~ /(\d)\D/o ) {
+                $grab_this{${$clef}[$score]}{1}{$string}=$1;
+            }
+            pos = ${$clef}[$score];
+            while (/(\D\d|\Dx|\DX)\D/go) {
+                $grab_this{(pos)-1}{1}{$string}=$1;
+                pos = (pos) - 1;
+            }
+            # look for bar lines
+            pos = ${$clef}[$score];
+            while (/([\.o]*\|+[\.o]*)/go) {
+                if (substr($1,-1) eq '|') {
+                    $grab_this{(pos)-1}{0}{$string}=$1;
+                } else {
+                    $grab_this{(pos)-2}{0}{$string}=$1;
+                }
+            }
+        }
+
+        # step through 'significant' tablature for the score, parsing each
+        # and lining up columns as well as possible
+        $last_grab=${$clef}[$score];
+        foreach my $col (sort numerically (keys %grab_this)) {
+            my (@blank_tab);
+            for my $string (0 .. ($num_strings - 1)) {
+                $blank_tab[$string]=-1;
+            }
+            my (@this_pos) = @blank_tab;
+            #insert blank tab positions when there is no significant
+            #tab for col_width characters
+            for (my $i=$last_grab+COL_WIDTH;$i<$col;$i+=COL_WIDTH) {
+                push @{${$etk}[$score]},[@blank_tab];
+            }
+            if ($grab_this{$col}{2}) {
+                &insert_tab (\@this_pos,$grab_this{$col}{2},$num_strings);
+                if ($grab_this{$col}{1}) {
+                    &insert_tab (\@this_pos,$grab_this{$col}{1},$num_strings);
+                }
+                if (($grab_this{$col-1}{1})&&(!$grab_this{$col-1}{2})) {
+                    &insert_tab (\@this_pos,$grab_this{$col-1}{1},$num_strings);
+                }
+                $last_grab=$col;
+            } elsif (($grab_this{$col}{1})&&(!$grab_this{$col+1}{2})) {
+                &insert_tab (\@this_pos,$grab_this{$col}{1},$num_strings);
+                $last_grab=$col;
+            } elsif ($grab_this{$col}{0}) {
+                &insert_tab (\@this_pos,$grab_this{$col}{0},$num_strings);
+                $last_grab=$col;
+            }
+            if ($last_grab==$col) {
+                push @{${$etk}[$score]},[@this_pos];
+            }
+        }
+             
+        # look for widest line of tablature
+        if ((($#{${$etk}[$score]}+1)*COL_WIDTH+INITIAL_COL)>$max_x) {
+            $max_x=($#{${$etk}[$score]}+1)*COL_WIDTH+INITIAL_COL;
+        }
+    }
+    return $max_x;
+}
+
+# call translation subroutine, then ajust barline tablature, so that
+# repeat marks are only on the strings etktab expects them on
+sub insert_tab {
+    my ($this_pos,$insertions,$num_strings) = @_;
+    my ($repeat);
+    
+    foreach my $i (sort numerically (keys %{$insertions})) {
+        my ($translated) = &translate_pos(${$insertions}{$i});
+        if ($translated>-2) {
+            ${$this_pos}[$i]=$translated;
+        } else {
+            $repeat|=$translated*(-1)
+        }
+    }
+    if ($repeat) {
+        foreach my $i (0 .. ($num_strings -1)) {
+            ${$this_pos}[$i]=-2;
+        }
+        ${$this_pos}[1]=$repeat*-1;
+        ${$this_pos}[$num_strings-2]=$repeat*-1;
+    }
+}
+
+# convert one position of asciitab to numerical eTktab data
+sub translate_pos {
+    my ($ascii) = @_;
+   
+    # fretted string, including supported embellishment marks
+    if ($ascii=~/([hp\^~\/\\sbrt]*)(\d+)/o) {
+        return ($2+EMBELLISH->{$1});
+    # bar line
+    } elsif ($ascii=~/[o\.]*\|+[o\.]*/o) {
+        $ascii=~s/\|+/\|/o;
+        $ascii=~/([o\.]*\|+[o\.]*)/o;
+        return BARLINES->{$1};
+    # muted string
+    } elsif ($ascii=~/x/o) {
+        return 2000;
+    # blank position
+    } else {
+        return -1;
+    }
+}
+
+# write out etktab file
+sub write_etk_file {
+    my ($num_strings,$tuning,$etk,$max_x,$lyrics) = @_;
+    my ($tabcols);
+    
+    if ($opt_d) {
+        printf STDERR ("    read %d scores.\nWriting eTktab file to ",($#{$etk}+1));
+        if ($opt_o) {
+            print STDERR "$opt_o\n";
+        } else {
+            print STDERR "STDOUT\n";
+        }
+    }
+    
+    # make max line width evenly divisible by col_width, then compute how many
+    # positions per row, based on that
+    while ((($max_x - INITIAL_COL) % COL_WIDTH) != 0) {
+        $max_x++;
+    }
+    $tabcols=($max_x - INITIAL_COL)/COL_WIDTH-1;
+    
+    # open output file
+    if ($opt_o) {
+        open (ETKFILE,"> $opt_o") or die "Can't write to $opt_o\n";
+    } else {
+        open (ETKFILE,">&STDOUT");
+    }
+    # print header
+    print ETKFILE "# converted by tab2etk ", VERSION,
+        "\n#*formatting: score_width $max_x row_sep_lines 3\n#*lyrics:";
+    # print lyrics
+    foreach my $section (sort sortlines (keys %{$lyrics})) {
+        print ETKFILE " $section \{${$lyrics}{$section}\}";
+    }
+    # print tuning
+    print ETKFILE "\n$tuning";
+    #print tab
+    for my $score (0 .. $#{$etk}) {
+        for my $col (0 .. $tabcols) {
+            print ETKFILE "{ ";
+            for my $string (0 .. ($num_strings-1)) {
+                if ($col > $#{${$etk}[$score]}) {
+                    # pad the tab with whitespace to match score width
+                    print ETKFILE "-16 ";
+                } else {
+                    print ETKFILE "${$etk}[$score][$col][$string] ";
+                }
+            }
+            print ETKFILE "} ";
+        }
+    }
+    close ETKFILE;
+}
+
+# subcommand for 'sort' to put lyrics array in order
+sub sortlines {
+    my ($first,$second);
+    if ($a =~ /header/ or $b =~ /footer/) {
+        return -1;
+    } elsif ($a =~ /footer/ or $b =~ /header/) {
+        return 1;
+    } else {
+        ($first,$second) = ($a =~ /(\d+)/, $b =~ /(\d+)/);
+        return $first <=> $second;
+    }
+}

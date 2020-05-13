@@ -1,0 +1,158 @@
+<HTML>
+<HEAD><TITLE>eTktab revision history</TITLE></HEAD>
+<BODY>
+<H3>1.0 (initial revision--changes from tktab-&gt;eTktab listed)</H3>
+<UL>
+<LI>changed file dialogs
+<LI>added cut/paste
+<LI>added embellishment code
+<LI>added emacs tablature mode key bindings
+<LI>added code to change guitar's tuning
+<LI>added new ways to move around in tab
+<LI>added dialog when quit without saving changes
+<LI>made dialog windows transients
+<LI>made window contents follow when screen moves
+</UL>
+
+<H3>1.1</H3>
+<UL>
+<LI>added -b flag for bass mode ( 4 strings, not 6 )
+<LI>added 's' embellishment for slap/pop of a note
+<LI>cleaned up codebase and added comments
+</UL>
+
+<H3>2.0</H3>
+<H5>CLEANUP:</H5>
+<UL>
+<LI>misc. cleanup:  changed variable, window, and proc names, rewrote some cruft
+<LI>cleaned up a handfull of bugs
+<LI>added key bindings for buttons in alert windows
+<LI>alert windows placed at center of parent window
+<LI>added code to limit resizing of certain windows
+<LI>changed behavior of many procs if some tab is currently highlighted
+<LI>made adjustments to code surrounding current directory for file I/O
+<LI><B>***CHANGED FILE FORMAT</B> (see <A HREF=README.html>README</A>)
+<LI>'lead mode' now inserts in front of pre-entered tab
+<LI>mod's to behavior of space and insert keys
+<LI>many changes to button bar
+<LI>some speed ups of various proc's
+</UL>
+<H5>NEW FEATURES:</H5>
+<UL>
+<LI>'open' now automatically adjusts to bass or 6-string mode of loaded file
+<LI>can now move, copy, paste via mouse
+<LI>can now have multiple tab windows up at once
+<LI>can now paste into other running eTktab windows
+<LI>can now paste into other applications
+<LI>added undo/redo feature
+<LI>added 'repeat' marks on bar lines
+<LI>now windows/mac compatible; makes some adjustments to each platform
+</UL>
+
+<H3>2.1</H3>
+<UL>
+<LI>changed 'alt' key to 'option' key in macintosh version
+<LI>Shift-[1-6] inserts at fret 0, ignoring the current 'base fret'
+<LI>changed tablature font size in MS Windows
+</UL>
+
+<H3>2.5</H3>
+<H5>CLEANUP:</H5>
+<UL>
+<LI>Changes to tab drawing proc's
+<LI>Created some 'mega-widget' procs
+<LI>more use of standard tk dialogs
+<LI>menu changes (multiple columns, separators, keyboard accelerators)
+<LI>'ghosting' menu options via 'disable', instead of changing colors
+<LI>cleaned up help window formatting
+<LI>more generalized creation of 4/5/6 string modes (easier to add more modes)
+<LI>clearer use of arguments to various proc's
+<LI>allow cut/paste between eTktab windows in different eTktab processes in Unix
+<LI>other miscellaneous stuff
+</UL>
+<H5>NEW FEATURES:</H5>
+<UL>
+<LI>added alternate keybinding support
+<LI>added alternate language support
+<LI>added 5 string mode
+<LI>added user-preference code (fonts, colors, formatting, tunings, initial document type, initial window size)
+<LI>added up/down,pgup/pgdn,home/end keybindings to help window
+<LI>added bend,release,tapping,muted note modifiers (program now includes all note modifiers referenced in alt.guitar.tab FAQ)
+<LI>added 'new line of tablature' function, bound to Return key
+<LI>added formatting info. to documents, yet still backwards compat.
+<LI>added keybinding for select-all
+<LI><B>removed 'Meta' keybinding</B> for Unix (now only Alt)
+<LI><B>changed keybindings for repeat symbols</B> to be CMD-; for both right and left
+<LI><B>changed keybinding for 'change chord/lead mode'</B> to tab key
+<LI>changed behavior of 'new_tab' keybinding to work off preferences, instead of current doctype
+<LI>removed unix '-b' flag, in favor of user's preferences
+</UL>
+
+<H3>3.0</H3>
+<H5>CLEANUP:</H5>
+<UL>
+<LI>Code additions and alterations for Mac OS X (Aqua) native version
+<LI>Found bug that made paste button unavailable inappropriately
+<LI>Much cleanup of quirks in highlighting of selected tablature
+<LI>More efficient (faster) coding of drawing window contents
+<LI>added up/down arrow buttons to alter some values in pulldown menus
+<LI>fixed a bug in altered tunings in saved files
+<LI>Changed appearance of mouse pointer in certain situations
+<LI>Rewrote much of README file
+</UL>
+<H5>NEW FEATURES:</H5>
+<UL>
+<LI>Lyrics editing mode
+<LI>Added document printing
+<LI>Added menu of open windows
+</UL>
+<H3>3.1</H3>
+<H5>CLEANUP:</H5>
+<UL>
+<LI>Fixed bug with reading files from older versions
+<LI>Fixed bug when using pgdn key at end of document
+<LI>Fixed bug causing eTktab to ignore formatting info. in files
+<LI>Fixed bug causing wrong keybindings after opening a file, in some situations
+<LI>Fixed bug regarding backspace key in lyrics mode
+<LI>Mouse clicks now place cursor more accurately in lyrics mode
+<LI>Fixed bug regarding bad behavior when trying to run a second eTktab process in MS Windows
+<LI>Added extend/paste mouse bindings in lyrics mode
+<LI>Added a verification dialog when reverting preferences to defaults
+<LI>New MS Windows installer
+<LI>Fixed Mac OS Classic not being default app for 5-string tab files
+<LI><B>Thanks for the bug reports!!!!</B>
+</UL>
+<H5>NEW FEATURES:</H5>
+<UL>
+<LI>Added 7 string tablature mode
+<LI>Added named presets to tuning window, editable in user preferences
+</UL>
+<H3>3.2</H3>
+<H5>CLEANUP:</H5>
+<UL>
+<LI>Lyrics/tab mode now switches automatically, in response to mouse clicks in tab scores or 'textboxes'
+<LI>Can now click on end of textbox symbol to go into that textbox
+<LI>In lyrics mode, "current position" color now only added to the textbox that contains the cursor
+<LI>Focus now follows cursor for left/right cursor key
+<LI>Menubuttons now keep consistent size, where possible
+<LI>Fixed bug in internationalization code, regarding 'Save' in File menu
+<LI>Return key uses new feature, listed below to insert whitespace, rather than blank tab positions to end of line
+<LI>Macintosh Classic and OS X now have File, Edit, and Help menus exclusively in the Mac Menubar (rather than the window statusbar)
+<LI>Many OS X bugfixes, due to upstream cleanup in tcl/tk 8.4.5
+</UL>
+<H5>NEW FEATURES:</H5>
+<UL>
+<LI>Blank spaces may now be added to tablature (using whitespace in tab makes files unreadable by versions older than 3.2)
+</UL>
+<H3>3.21/3.22</H3>
+<UL>
+<LI>Releases for <B><I>Mac OS X</I> ONLY</B>
+<LI>3.21: workaround for OS X dialog button bug, and changes to printing interface
+<LI>3.22: workaround for OS X menu accelerator bug
+</UL>
+<H5>KNOWN BUGS: (see readme)</H5>
+<UL>
+<LI>OS X: some buttons not drawn
+</UL>
+</BODY>
+</HTML>

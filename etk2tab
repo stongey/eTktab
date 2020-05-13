@@ -1,0 +1,164 @@
+#!/usr/bin/env perl
+# see with 4 column tabs
+# ex:ts=4
+
+=head1 etk2tab
+
+etk2tab converts etktab tablature file to ascii tablature notation.
+Run with -h to see options.
+
+written by Juha Erkkilä <erkkila@cc.jyu.fi>
+	and Jason Sonnenschein <jes_jm@yahoo.com>
+
+no copyright, this is in public domain
+
+=cut
+
+use strict;
+use warnings;
+use Getopt::Std;
+
+my (
+	$width,				# score width
+	$rsl,				# row_sep_lines, lines between scores
+	@tuning,			# the tuning as letters
+	@lyrics,			# references to arrays of lyrics lines
+	@tabs,				# list of separate chords
+	$width_adjustment	# different for 2.* and 3.* files
+);
+our ($opt_b, $opt_h, $opt_l, $opt_o);	# options
+
+getopts('bhl:o:');
+
+if (not @ARGV or $opt_h) {
+	print STDERR <<EOF ;
+usage:  $0 [options] <tablature file>
+\t-b\t\tinsert a page break to the end
+\t-l <n>\t\tinsert page breaks after every <n> lines
+\t-o <file>\toutput to <file> (rather than STDOUT)
+\t-h\t\tprint this usage summary
+EOF
+	exit;
+}
+
+$width_adjustment = 9;
+$width = 75;
+$rsl = 3;
+
+if (not open(ETK, $ARGV[0])) {
+	print STDERR "Could not open $ARGV[0]\n";
+	exit;
+}
+parse_file();
+$width = ($width - $width_adjustment) / 3;
+close ETK;
+
+if ($#tuning < 3) {
+	die "Can't parse this file...  appears to not be an eTktab file.\n";
+}
+if ($opt_o) {
+	open (TAB,"> $opt_o") or die "Can't write to $opt_o\n";
+} else {
+	open (TAB,">&STDOUT");
+}
+print_tabulature();
+if ($opt_b) {
+	print TAB "\x0c";
+}
+close TAB;
+
+sub parse_file {
+	while (<ETK>) {
+		s/\{ -2 \}/-2/g;
+		/^#eTktab([3-9]|\d{2})/ and $width_adjustment = 3;
+		/^#\s*converted by tab2etk/ and $width_adjustment = 3;
+		/^#\*formatting:/ and ($width, $rsl) = (split)[2,4];
+		/^#\*lyrics:/ and @lyrics = parse_lyrics($_);
+		/^(\w[\#b\ ])$/ and push @tuning, $1;
+		/^\{/ and @tabs = map { [ split ] } grep /\d/, split /({|})/;
+	}
+}
+ 
+sub parse_lyrics {
+	my (@lines);
+	push @lines, ($_[0] =~ /header (\007|\{.*?\})/);
+	push @lines, sort { ($a =~ /^(\d+)/)[0] <=> ($b =~ /^(\d+)/)[0] }
+		grep /^\d+/, ($_[0] =~ /line(\d+ (\007|\{.*?\}))/g);
+	push @lines, ($_[0] =~ /footer (\007|\{.*?\})/);
+	return map { [ split /\007/ ] } map { /\{(.*)\}/ ? $1 : "" } @lines;
+}
+
+sub print_tabulature {
+	my $lotp = 0;	# lines on this page
+	foreach my $scorenumber (-1 .. int($#tabs / $width) + 1) {
+		my @score = get_score($scorenumber);
+		if ($scorenumber == -1) {	# no space before header
+			print TAB join("\n", @score);
+			$lotp += $rsl + scalar(@score);
+		} elsif (!$opt_l) {
+			print TAB join("\n", ("") x ($rsl + 1), @score);
+		} elsif ($lotp == 0 or $lotp + $rsl + scalar(@score) < $opt_l) {
+			print TAB join("\n", ("") x ($rsl + 1), @score);
+			$lotp += $rsl + scalar(@score);
+		} else {
+			# next page
+			print TAB "\x0c", join("\n", @score);
+			$lotp = scalar(@score);
+		}
+	}
+}
+
+sub get_score {
+	my ($scorenumber) = @_;
+	my @score;
+	if ($scorenumber < 0) {		# header
+		return defined(@{$lyrics[0]}) ? @{shift @lyrics} : "";
+	} elsif ($scorenumber > int($#tabs / $width)) {		# footer
+		return defined(@{$lyrics[$scorenumber]}) ?
+			@{$lyrics[$scorenumber]} : "";
+	}
+	my $start_chord = $scorenumber * $width;
+	my $end_chord = ($scorenumber + 1) * $width - 1;
+	$end_chord = $end_chord < $#tabs ? $end_chord : $#tabs;
+	foreach my $string (0 .. $#tuning) {
+		push @score, $tuning[$string] . "|";
+		foreach ($start_chord .. $end_chord) {
+			$score[-1] .= decode($tabs[$_][$string]);
+		}
+	}
+	push @score, @{$lyrics[$scorenumber]} if defined @{$lyrics[$scorenumber]};
+	return @score;
+}
+
+sub decode {
+	my ($code) = @_;
+	my %table = (
+		'-16' => '   ', '-14' => 'o|o', '-10' => '-|o', 
+        '-6' => 'o|-', '-2' => '-|-', '-1' => '---',
+		
+		# modifiers
+		'0' => '-', '1' => 'h', '2' => 'p', '3' => '^', '4' => '~',
+		'5' => '/', '6' => '\\', '7' => 's', '8' => 'b', '9' => 'r',
+		'10' => 't',
+	);
+	
+	$code < 0 and return exists $table{$code} ? $table{$code} : "---";
+	$code < 10 and return "-$code-";
+	$code < 100 and return "-$code";
+	if ($code =~ /(\d+)0(\d)$/) {
+		if ($1 == '20') {
+			return "-x-";
+		} else {
+			return exists $table{$1} ? "$table{$1}$2-" : "---";
+		}
+	}
+	if ($code =~ /(\d+)(\d\d)$/) {
+		if ($1 == '20') {
+			return "-x-";
+		} else {
+			return exists $table{$1} ? "$table{$1}$2" : "---";
+		}
+	}
+	
+	return $code;
+}

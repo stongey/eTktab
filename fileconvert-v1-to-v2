@@ -1,0 +1,17 @@
+#!/bin/sh
+
+case "$1" in 
+    "" | -* )
+    echo "Usage:  $0 <filename> [...]"
+    exit
+    ;;
+esac
+for i in $* ; do
+    if [ -f $i ] ; then
+        newname=`echo $i | sed 's/etk$/et6.gz/' | sed 's/etb$/et4.gz/'`
+        mv $i $newname
+        gzip -d $newname
+    else
+        echo "No such file \"$i\""
+    fi
+done
