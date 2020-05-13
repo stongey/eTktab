@@ -1,5 +1,13 @@
 # eTktab
-Copied from sourceforge repository in order to preserve some changes I made for running from the Terminal on my Mac 10.13.6 (High Sierra). All credit to the original authors. Original ReadMe below:
+Copied from sourceforge repository in order to preserve some changes I made for running from the Terminal on my Mac. All credit to the original authors. Original ReadMe below.
+
+This repository does not include the binaries that are available for download in the original sourceforge repository. I was unable to get the Mac binary to work.
+
+I have tested and run the UNIX tcl/tk code on my Mac 10.13.6 (High Sierra) with some very minor modifications to the code.
+
+tcl/tk 8.0 or greater must be installed. On a Mac, the easiest way to do this is to use Homebrew: ```brew install tcl-tk```.
+
+Then double-click on the [eTktab](eTktab) file to launch the program.
 
 ----
 
