@@ -26,15 +26,15 @@ may redistribute it under the same conditions they received it.
 1. You may make and give away verbatim copies of the source form of the Standard Version of this Package without restriction, provided that you duplicate all of the original copyright notices and associated disclaimers.
 1. You may apply bug fixes, portability fixes and other modifications derived from the Public Domain or from the Copyright Holder. A Package modified in such a way shall still be considered the Standard Version.
 1. You may otherwise modify your copy of this Package in any way, provided that you insert a prominent notice in each changed file stating how and when you changed that file, and provided that you do at least ONE of the following:
-  1. place your modifications in the Public Domain or otherwise make them Freely Available, such as by posting said modifications to Usenet or an equivalent medium, or placing the modifications on a major archive site such as ftp.uu.net, or by allowing the Copyright Holder to include your modifications in the Standard Version of the Package.
-  1. use the modified Package only within your corporation or organization.
-  1. rename any non-standard executables so the names do not conflict with standard executables, which must also be provided, and provide a separate manual page for each non-standard executable that clearly documents how it differs from the Standard Version.
-  1. make other distribution arrangements with the Copyright Holder.
+    1. place your modifications in the Public Domain or otherwise make them Freely Available, such as by posting said modifications to Usenet or an equivalent medium, or placing the modifications on a major archive site such as ftp.uu.net, or by allowing the Copyright Holder to include your modifications in the Standard Version of the Package.
+    1. use the modified Package only within your corporation or organization.
+    1. rename any non-standard executables so the names do not conflict with standard executables, which must also be provided, and provide a separate manual page for each non-standard executable that clearly documents how it differs from the Standard Version.
+    1. make other distribution arrangements with the Copyright Holder.
 1. You may distribute the programs of this Package in object code or executable form, provided that you do at least ONE of the following:
-  1. distribute a Standard Version of the executables and library files, together with instructions (in the manual page or equivalent) on where to get the Standard Version.
-  1. accompany the distribution with the machine-readable source of the Package with your modifications.
-  1. accompany any non-standard executables with their corresponding Standard Version executables, giving the non-standard executables non-standard names, and clearly documenting the differences in manual pages (or equivalent), together with instructions on where to get the Standard Version.
-  1. make other distribution arrangements with the Copyright Holder.
+    1. distribute a Standard Version of the executables and library files, together with instructions (in the manual page or equivalent) on where to get the Standard Version.
+    1. accompany the distribution with the machine-readable source of the Package with your modifications.
+    1. accompany any non-standard executables with their corresponding Standard Version executables, giving the non-standard executables non-standard names, and clearly documenting the differences in manual pages (or equivalent), together with instructions on where to get the Standard Version.
+    1. make other distribution arrangements with the Copyright Holder.
 1. You may charge a reasonable copying fee for any distribution of this Package. You may charge any fee you choose for support of this Package. You may not charge a fee for this Package itself. However, you may distribute this Package in aggregate with other (possibly commercial) programs as part of a larger (possibly commercial) software distribution provided that you do not advertise this Package as a product of your own.
 1. The scripts and library files supplied as input to or produced as output from the programs of this Package do not automatically fall under the copyright of this Package, but belong to whomever generated them, and may be sold commercially, and may be aggregated with this Package.
 1. C or perl subroutines supplied by you and linked into this Package shall not be considered part of this Package.
@@ -43,4 +43,4 @@ may redistribute it under the same conditions they received it.
 
 ## End of Artistic License
 
-1. ADDITIONAL STIPULATION FOR ETKTAB:  This code is based on a program named TkTab by Giovanni Chierico. The only stipulation of TkTab's license was that all descendants of his code contain his name and email address. Therefore, that is a condition of eTktab's license, as well.
+10. ADDITIONAL STIPULATION FOR ETKTAB:  This code is based on a program named TkTab by Giovanni Chierico. The only stipulation of TkTab's license was that all descendants of his code contain his name and email address. Therefore, that is a condition of eTktab's license, as well.
