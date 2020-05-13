@@ -1,5 +1,5 @@
 # eTktab
-Copied from sourceforge repository in order to preserve some changes I made for running on my Mac 10.13.6 (High Sierra).
+Copied from sourceforge repository in order to preserve some changes I made for running from the Terminal on my Mac 10.13.6 (High Sierra). All credit to the original authors. Original ReadMe below:
 
 ----
 
